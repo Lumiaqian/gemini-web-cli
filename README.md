@@ -1,5 +1,7 @@
 # Gemini Web CLI
 
+[![npm version](https://img.shields.io/badge/npm-v1.0.0-blue.svg)](https://www.npmjs.com/package/@lumiaqian/gemini-web-cli)
+
 Gemini Web CLI 是一个通过 CDP 驱动 Gemini 网页的命令行工具，面向脚本、自动化流程和 CI 场景，提供稳定的 JSON 机器输出、明确的退出码，以及围绕对话、生图和浏览器诊断的一组 CLI 命令。
 
 当前选定路线是 `hybrid-native-cli-node-core`。CLI 负责命令树、机器模式 JSON 契约、退出码和发布编排，浏览器与 daemon 仍然由私有 Node core/runtime 提供。

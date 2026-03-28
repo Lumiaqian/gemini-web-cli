@@ -38,7 +38,9 @@
     "test:smoke": "node scripts/run-smoke.mjs",
     "ci": "node scripts/ci-local.mjs --selected-route",
     "release:dry-run": "node scripts/release-dry-run.mjs --selected-route hybrid-native-cli-node-core --require-artifact-metadata",
-    "daemon": "node src/daemon/server.js"
+    "daemon": "node src/daemon/server.js",
+    "preversion": "npm test -- --suite core-modules",
+    "postversion": "git push && git push --tags"
   },
   "keywords": [
     "gemini",
