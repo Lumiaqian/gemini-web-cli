@@ -1,0 +1,51 @@
+{
+  "fixtureVersion": 1,
+  "kind": "cli-contract-fixture",
+  "name": "contract-failure",
+  "description": "Representative machine-mode timeout envelope for a long-running text command.",
+  "commandLine": {
+    "binary": "gemini-web-cli",
+    "subcommand": "send-message",
+    "args": [
+      "--json",
+      "--timeout-ms",
+      "10000",
+      "--request-id",
+      "req_20260328_02",
+      "--message",
+      "Write a very long report."
+    ]
+  },
+  "expectedExitCode": 6,
+  "stdout": "{\"schemaVersion\":1,\"mode\":\"json\",\"command\":\"send-message\",\"requestId\":\"req_20260328_02\",\"ok\":false,\"exitCode\":6,\"timing\":{\"startedAt\":\"2026-03-28T10:05:00.000Z\",\"finishedAt\":\"2026-03-28T10:05:10.000Z\",\"durationMs\":10000},\"execution\":{\"timeoutMs\":10000,\"terminalState\":\"timed_out\",\"cancelledBySignal\":null},\"result\":null,\"error\":{\"category\":\"timeout\",\"code\":\"timeout\",\"message\":\"Command exceeded timeout while waiting for Gemini to finish responding.\",\"retryable\":true,\"details\":{\"phase\":\"wait-for-response\",\"elapsedMs\":10000}}}\n",
+  "stderr": "[browser] reusing existing Gemini tab\n[poll] waiting for Gemini reply\n",
+  "envelope": {
+    "schemaVersion": 1,
+    "mode": "json",
+    "command": "send-message",
+    "requestId": "req_20260328_02",
+    "ok": false,
+    "exitCode": 6,
+    "timing": {
+      "startedAt": "2026-03-28T10:05:00.000Z",
+      "finishedAt": "2026-03-28T10:05:10.000Z",
+      "durationMs": 10000
+    },
+    "execution": {
+      "timeoutMs": 10000,
+      "terminalState": "timed_out",
+      "cancelledBySignal": null
+    },
+    "result": null,
+    "error": {
+      "category": "timeout",
+      "code": "timeout",
+      "message": "Command exceeded timeout while waiting for Gemini to finish responding.",
+      "retryable": true,
+      "details": {
+        "phase": "wait-for-response",
+        "elapsedMs": 10000
+      }
+    }
+  }
+}

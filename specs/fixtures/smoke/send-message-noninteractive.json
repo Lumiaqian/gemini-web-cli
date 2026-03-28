@@ -1,0 +1,40 @@
+{
+  "fixtureVersion": 1,
+  "kind": "cli-smoke-fixture",
+  "name": "send-message-noninteractive",
+  "description": "Route-neutral non-interactive smoke registration for a machine-mode text command.",
+  "routeNeutral": true,
+  "interactive": false,
+  "commandLine": {
+    "binary": "<native-cli>",
+    "subcommand": "send-message",
+    "args": [
+      "--json",
+      "--timeout-ms",
+      "60000",
+      "--request-id",
+      "smoke_send_message_01",
+      "--message",
+      "Reply with one concise sentence."
+    ]
+  },
+  "execution": {
+    "timeoutMs": 60000,
+    "requiresLogin": false,
+    "notes": "This fixture captures the machine-mode command shape and stdout or stderr expectations only; Task 4 keeps smoke execution at metadata registration and dry-run level without requiring live Gemini access."
+  },
+  "expectations": {
+    "stdoutContract": "json-only",
+    "stderrContract": "diagnostics-only",
+    "allowedTerminalStates": [
+      "succeeded",
+      "failed",
+      "timed_out",
+      "interrupted"
+    ]
+  },
+  "evidence": {
+    "captureSource": "src/demo2.js",
+    "reason": "The text conversation demo is the cleanest route-neutral smoke shape for Task 4 because it reflects a stable command form without forcing image download, browser login, or manual interaction during dry-run validation."
+  }
+}

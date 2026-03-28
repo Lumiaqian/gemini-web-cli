@@ -1,0 +1,37 @@
+{
+  "name": "gemini-web-cli",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "gemini-web-cli": "scripts/run-cli.mjs"
+  },
+  "scripts": {
+    "cli": "node scripts/run-cli.mjs",
+    "build": "node scripts/build-cli.mjs --selected-route hybrid-native-cli-node-core",
+    "test": "node scripts/test-unit.mjs",
+    "test:contract": "node scripts/test-contract.mjs",
+    "test:integration": "node scripts/test-integration.mjs",
+    "test:smoke": "node scripts/run-smoke.mjs",
+    "ci": "node scripts/ci-local.mjs --selected-route",
+    "release:dry-run": "node scripts/release-dry-run.mjs --selected-route hybrid-native-cli-node-core --require-artifact-metadata",
+    "daemon": "node src/daemon/server.js"
+  },
+  "keywords": [
+    "gemini",
+    "cli",
+    "cdp",
+    "puppeteer",
+    "ai-image-generation",
+    "browser-automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "description": "通过 CDP 驱动 Gemini 网页的命令行工具，支持 AI 问答、生图与浏览器自动化",
+  "dependencies": {
+    "puppeteer-core": "^24.39.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "sharp": "^0.34.5"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "fixtureVersion": 1,
+  "kind": "cli-smoke-fixture",
+  "name": "bad-smoke-interactive",
+  "description": "Negative smoke fixture proving CI must reject scenarios that declare interactive execution.",
+  "routeNeutral": true,
+  "interactive": true,
+  "commandLine": {
+    "binary": "<native-cli>",
+    "subcommand": "send-message",
+    "args": [
+      "--json",
+      "--timeout-ms",
+      "60000",
+      "--request-id",
+      "smoke_bad_interactive_01",
+      "--message",
+      "Say hello in one sentence."
+    ]
+  },
+  "execution": {
+    "timeoutMs": 60000,
+    "requiresLogin": false,
+    "notes": "This fixture is intentionally valid at the schema level but disallowed in CI because interactive execution would break zero-human-intervention verification."
+  },
+  "expectations": {
+    "stdoutContract": "json-only",
+    "stderrContract": "diagnostics-only",
+    "allowedTerminalStates": [
+      "succeeded",
+      "failed",
+      "timed_out",
+      "interrupted"
+    ]
+  },
+  "evidence": {
+    "captureSource": "src/demo2.js",
+    "reason": "The current repo still demonstrates polling-oriented interaction patterns, so Task 4 keeps smoke registration route-neutral and makes CI reject explicitly interactive scenarios."
+  }
+}

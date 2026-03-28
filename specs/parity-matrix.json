@@ -1,0 +1,668 @@
+{
+  "schemaVersion": 1,
+  "migrationTarget": "native-cli",
+  "sourceOfTruth": {
+    "mcpServer": "src/mcp-server.js",
+    "readmeGrouping": "README.md:249-295",
+    "sharedArchitecture": [
+      "src/mcp-server.js redirects non-JSON stdout writes to stderr and remaps console.* to stderr so MCP stdio stays machine-readable.",
+      "Most tools use src/index.js:createGeminiSession(), which delegates to src/browser.js:ensureBrowser() and src/gemini-ops.js:createOps(page).",
+      "src/browser.js auto-starts a detached daemon when needed, acquires a CDP endpoint, finds or opens a Gemini tab, and disconnect() leaves the browser alive under daemon TTL control.",
+      "Most handlers call disconnect() on controlled success/failure paths, but the code does not use finally blocks, so uncaught mid-handler failures can skip cooperative cleanup."
+    ]
+  },
+  "toolCount": 16,
+  "tools": [
+    {
+      "name": "gemini_generate_image",
+      "capabilityGroup": "core-image-generation",
+      "parameters": [
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Detailed image prompt text."
+        },
+        {
+          "name": "newSession",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Start from a fresh chat before generating."
+        },
+        {
+          "name": "referenceImages",
+          "type": "string[]",
+          "required": false,
+          "default": [],
+          "description": "Local file paths uploaded before the prompt is sent."
+        },
+        {
+          "name": "fullSize",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Download the full-size image instead of saving a preview extraction."
+        },
+        {
+          "name": "timeout",
+          "type": "number",
+          "required": false,
+          "default": 180000,
+          "description": "Wait budget in milliseconds for Gemini to finish generation."
+        }
+      ],
+      "outputs": {
+        "success": "Returns MCP text content announcing the saved local file path. In preview mode raw base64 is intentionally not returned; the handler writes a file under config.outputDir and returns only the path.",
+        "failure": "Returns MCP text content with isError=true for login failure, upload failure, generation failure, or crash."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session through createGeminiSession().",
+        "Performs a login precheck and aborts if Gemini is not logged in.",
+        "May switch the current model to Pro via ops.ensureModelPro().",
+        "Uploads each reference image from the local filesystem when referenceImages is non-empty.",
+        "Writes a local image file under config.outputDir on success.",
+        "When newSession=true, the current implementation clicks the new-chat button twice: once before reference upload and again immediately before generateImage().",
+        "Normal paths disconnect the CDP session after the tool finishes, leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": true,
+        "timeoutSensitive": true,
+        "notes": "Documented as a synchronous blocking tool. Handler text says typical runtime is 60-120 seconds and callers should budget at least 120000ms."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() is the common high-level entrypoint for building an ops/page/browser session.",
+        "src/browser.js:ensureBrowser() auto-starts the detached daemon if needed, acquires a CDP endpoint, and finds or opens a Gemini tab; disconnect() leaves the browser alive under daemon TTL.",
+        "src/gemini-ops.js:checkLogin(), ensureModelPro(), uploadImage(), and generateImage() provide the concrete automation used here."
+      ],
+      "errorModes": [
+        "not_logged_in",
+        "reference_upload_failed",
+        "generation_failed",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Part of the current MCP surface and central to the product; no concrete source evidence justifies deferral or removal."
+      }
+    },
+    {
+      "name": "gemini_new_chat",
+      "capabilityGroup": "session-management",
+      "parameters": [],
+      "outputs": {
+        "success": "Returns MCP text content confirming a new Gemini chat was created.",
+        "failure": "Returns MCP text content with isError=true when the new-chat click fails or the handler crashes."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Changes the active browser tab state to a fresh Gemini conversation.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": false,
+        "notes": "Expected to be a short UI action with no explicit long-running wait loop."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() creates the shared browser session wrapper.",
+        "src/browser.js:ensureBrowser() handles daemon startup/reuse and disconnect() preserves the browser after the click.",
+        "src/gemini-ops.js exposes the low-level click path used through ops.click('newChatBtn')."
+      ],
+      "errorModes": [
+        "new_chat_failed",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Session reset is a first-class current capability and has no documented replacement."
+      }
+    },
+    {
+      "name": "gemini_temp_chat",
+      "capabilityGroup": "session-management",
+      "parameters": [],
+      "outputs": {
+        "success": "Returns MCP text content confirming temporary chat mode was entered after the tool auto-created a blank chat.",
+        "failure": "Returns MCP text content with isError=true if the prerequisite new-chat step or temp-chat click fails."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Always clicks new chat before attempting temporary chat mode because the temp button is only visible on a blank chat page.",
+        "Changes the active session into temporary mode with no history retention.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": false,
+        "notes": "Short UI flow with a fixed stabilization sleep, not a long poll."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() opens the shared Gemini session wrapper.",
+        "src/browser.js:ensureBrowser() guarantees a live browser tab and disconnect() releases only the CDP link.",
+        "src/gemini-ops.js:click('newChatBtn') and clickTempChat() provide the concrete behavior."
+      ],
+      "errorModes": [
+        "precondition_new_chat_failed",
+        "temp_chat_failed",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Temporary chat is explicitly exposed today and must remain available unless a concrete privacy alternative exists."
+      }
+    },
+    {
+      "name": "gemini_switch_model",
+      "capabilityGroup": "model-and-conversation",
+      "parameters": [
+        {
+          "name": "model",
+          "type": "enum(pro|quick|think)",
+          "required": true,
+          "default": null,
+          "description": "Target Gemini model selection."
+        }
+      ],
+      "outputs": {
+        "success": "Returns MCP text content confirming the selected model and includes the previous model when available.",
+        "failure": "Returns MCP text content with isError=true if the model menu or target option cannot be clicked."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Changes the active Gemini model in the current tab.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": false,
+        "notes": "Short menu interaction with small fixed waits for UI stabilization."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() provides the shared session entrypoint.",
+        "src/browser.js:ensureBrowser() handles daemon-backed browser access and disconnect() preserves the browser state.",
+        "src/gemini-ops.js:switchToModel(model) implements the actual menu open/select flow."
+      ],
+      "errorModes": [
+        "model_menu_open_failed",
+        "model_option_not_found",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Model selection changes existing behavior and is already part of the current public MCP surface."
+      }
+    },
+    {
+      "name": "gemini_send_message",
+      "capabilityGroup": "model-and-conversation",
+      "parameters": [
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Text prompt sent to Gemini."
+        },
+        {
+          "name": "timeout",
+          "type": "number",
+          "required": false,
+          "default": 120000,
+          "description": "Wait budget in milliseconds for Gemini to finish answering."
+        }
+      ],
+      "outputs": {
+        "success": "Returns the latest Gemini reply text directly as MCP content text; callers do not need to follow with gemini_get_latest_text_response.",
+        "failure": "Returns MCP text content with isError=true and includes elapsed time when sendAndWait() fails."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Mutates the active chat by filling the prompt box, clicking send, and waiting for the response to finish.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": true,
+        "timeoutSensitive": true,
+        "notes": "Documented as a synchronous blocking tool. Handler text says typical runtime is 10-60 seconds and it polls until Gemini returns to the idle mic state."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() is the entrypoint for building the ops/page/browser session.",
+        "src/browser.js:ensureBrowser() manages daemon startup/reuse and disconnect() leaves the browser resident after the interaction.",
+        "src/gemini-ops.js:sendAndWait() handles fill, click, polling, timeout, and latest-text extraction."
+      ],
+      "errorModes": [
+        "fill_failed",
+        "send_click_failed",
+        "timeout",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Direct text conversation is core user-facing functionality and already returns a stable value shape."
+      }
+    },
+    {
+      "name": "gemini_upload_images",
+      "capabilityGroup": "image-operations",
+      "parameters": [
+        {
+          "name": "images",
+          "type": "string[]",
+          "required": true,
+          "default": null,
+          "description": "One or more local image file paths to upload into the current Gemini input box."
+        }
+      ],
+      "outputs": {
+        "success": "Returns MCP text content confirming all images uploaded successfully.",
+        "failure": "Returns MCP text content with isError=true, includes the failing path, and reports partial success count when a later image in the batch fails."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Reads local filesystem paths and rejects missing files before upload.",
+        "Opens the Gemini upload UI, triggers the file chooser, and attaches images without sending a message.",
+        "Can leave partially uploaded images in the current prompt if a later upload fails.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": true,
+        "notes": "Not documented as a long-running tool, but each image upload waits for preview loading and can take up to the per-image upload timeout in gemini-ops."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() provides the shared browser session wrapper.",
+        "src/browser.js:ensureBrowser() handles daemon-backed browser access and disconnect() preserves the browser after upload.",
+        "src/gemini-ops.js:uploadImage(filePath) implements file existence checks, chooser interception, and preview-load polling."
+      ],
+      "errorModes": [
+        "file_not_found",
+        "upload_panel_click_failed",
+        "upload_image_failed",
+        "partial_batch_failure",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Reference-image upload is already part of the supported workflow and has no alternative surface today."
+      }
+    },
+    {
+      "name": "gemini_get_images",
+      "capabilityGroup": "image-operations",
+      "parameters": [],
+      "outputs": {
+        "success": "Returns MCP text content containing JSON for { total, newCount, images }, where each image includes src, alt, width, height, isNew, and index.",
+        "failure": "Returns MCP text content with isError=true when no loaded images are found or the handler crashes."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Reads current DOM image metadata only; does not download files.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": false,
+        "notes": "Read-only DOM inspection with no explicit wait loop."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() provides the session wrapper.",
+        "src/browser.js:ensureBrowser() handles daemon-backed access and disconnect() preserves the browser after metadata readback.",
+        "src/gemini-ops.js:getAllImages() performs the DOM scrape and normalizes image metadata."
+      ],
+      "errorModes": [
+        "no_loaded_images",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Image metadata discovery is part of the current public workflow and is needed by downstream extraction/download steps."
+      }
+    },
+    {
+      "name": "gemini_extract_image",
+      "capabilityGroup": "image-operations",
+      "parameters": [
+        {
+          "name": "imageUrl",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "The image src URL, typically taken from gemini_get_images output."
+        }
+      ],
+      "outputs": {
+        "success": "Returns MCP text content announcing the saved local file path after extracting image data and writing a file under config.outputDir.",
+        "failure": "Returns MCP text content with isError=true when extraction fails, including detail text when available."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Uses blob-canvas, in-page fetch, or CDP network extraction depending on the image URL shape.",
+        "Attempts watermark removal inside gemini-ops before the handler writes the final file.",
+        "Writes a local image file under config.outputDir on success.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": false,
+        "notes": "Not documented as long-running, but full extraction may traverse multiple fallback strategies before succeeding or failing."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() is the shared session entrypoint.",
+        "src/browser.js:ensureBrowser() handles daemon-backed browser access and disconnect() preserves the browser after extraction.",
+        "src/gemini-ops.js:extractImageBase64(imageUrl) implements canvas, in-page fetch, and CDP resource fallback paths."
+      ],
+      "errorModes": [
+        "missing_url",
+        "no_loaded_images",
+        "canvas_tainted",
+        "fetch_failed",
+        "cdp_request_failed",
+        "cdp_error",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Local image extraction is a current first-class capability and underpins the no-raw-base64 transport constraint."
+      }
+    },
+    {
+      "name": "gemini_download_full_size_image",
+      "capabilityGroup": "image-operations",
+      "parameters": [
+        {
+          "name": "index",
+          "type": "number",
+          "required": false,
+          "default": null,
+          "description": "Zero-based image index from oldest to newest; defaults to the latest image."
+        }
+      ],
+      "outputs": {
+        "success": "Returns MCP text content describing the selected image index, total image count, saved file path, and suggested original filename.",
+        "failure": "Returns MCP text content with isError=true and may include detail lines such as total image count or requested out-of-range index."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Configures CDP Browser.setDownloadBehavior for config.outputDir and listens for download events.",
+        "Scrolls and hovers over the target image to reveal the full-size download control.",
+        "Writes a local full-size image file under config.outputDir and then attempts watermark removal in place.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": true,
+        "timeoutSensitive": true,
+        "notes": "Handler description marks this as a long-running synchronous tool. Typical runtime is 10-30 seconds and completion depends on hover, button discovery, and browser download events."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() builds the shared ops/page/browser session.",
+        "src/browser.js:ensureBrowser() provides daemon-backed browser connectivity and disconnect() preserves the browser after download.",
+        "src/gemini-ops.js:downloadFullSizeImage({ index, timeout }) configures download behavior, triggers the UI flow, waits for download events, and post-processes the file."
+      ],
+      "errorModes": [
+        "no_loaded_images",
+        "index_out_of_range",
+        "full_size_download_btn_not_found",
+        "download_timeout",
+        "download_canceled",
+        "downloaded_file_not_found",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Full-size download is explicitly documented and distinct from preview extraction, so parity requires it in v1."
+      }
+    },
+    {
+      "name": "gemini_get_all_text_responses",
+      "capabilityGroup": "text-response",
+      "parameters": [],
+      "outputs": {
+        "success": "Returns MCP text content containing JSON for { ok, responses, total }, where each response includes index and text.",
+        "failure": "Returns MCP text content with isError=true when no text responses are found or the handler crashes."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Reads current DOM text-response content only; does not mutate chat state.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": false,
+        "notes": "Read-only DOM extraction with no explicit waiting."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() provides the session entrypoint.",
+        "src/browser.js:ensureBrowser() handles daemon-backed access and disconnect() preserves the browser after readback.",
+        "src/gemini-ops.js:getAllTextResponses() performs the DOM scrape and text normalization."
+      ],
+      "errorModes": [
+        "no_responses",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Bulk text-response inspection is a separate public capability and feeds current multi-turn workflows."
+      }
+    },
+    {
+      "name": "gemini_get_latest_text_response",
+      "capabilityGroup": "text-response",
+      "parameters": [],
+      "outputs": {
+        "success": "Returns the latest Gemini response text directly as MCP content text.",
+        "failure": "Returns MCP text content with isError=true when no text responses are found or the handler crashes."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Reads the latest DOM text response only; does not mutate chat state.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": false,
+        "notes": "Read-only DOM extraction with no explicit waiting."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() provides the session entrypoint.",
+        "src/browser.js:ensureBrowser() handles daemon-backed access and disconnect() preserves the browser after readback.",
+        "src/gemini-ops.js:getLatestTextResponse() performs the latest-response scrape and text normalization."
+      ],
+      "errorModes": [
+        "no_responses",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Latest-response extraction is currently public and complements the direct send_message flow."
+      }
+    },
+    {
+      "name": "gemini_check_login",
+      "capabilityGroup": "diagnostics-and-management",
+      "parameters": [],
+      "outputs": {
+        "success": "Returns MCP text content reporting logged-in state plus the navigation-bar text inspected by the login probe.",
+        "failure": "Returns MCP text content with isError=true when the login bar cannot be found or the handler crashes."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Reads login state from the live Gemini page DOM.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": false,
+        "notes": "Simple DOM probe with no explicit wait loop."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() provides the session entrypoint.",
+        "src/browser.js:ensureBrowser() handles daemon-backed access and disconnect() preserves the browser after inspection.",
+        "src/gemini-ops.js:checkLogin() delegates to the login-bar probe helper."
+      ],
+      "errorModes": [
+        "login_bar_not_found",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Login diagnostics are explicitly exposed today and gate several higher-level workflows."
+      }
+    },
+    {
+      "name": "gemini_probe",
+      "capabilityGroup": "diagnostics-and-management",
+      "parameters": [],
+      "outputs": {
+        "success": "Returns MCP text content containing JSON for prompt/input/button presence, current model, and page status details.",
+        "failure": "Returns MCP text content with isError=true only when the handler itself crashes; probe() otherwise returns structured state even when elements are missing."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Reads multiple UI selectors and current status from the active Gemini page.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": false,
+        "notes": "Read-only probe across several selectors with no explicit wait loop."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() provides the session entrypoint.",
+        "src/browser.js:ensureBrowser() handles daemon-backed access and disconnect() preserves the browser after inspection.",
+        "src/gemini-ops.js:probe(), getStatus(), and getCurrentModel() provide the structured page-state readback."
+      ],
+      "errorModes": [
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Probe output is current public diagnostics surface and useful for parity debugging of any native CLI replacement."
+      }
+    },
+    {
+      "name": "gemini_reload_page",
+      "capabilityGroup": "diagnostics-and-management",
+      "parameters": [
+        {
+          "name": "timeout",
+          "type": "number",
+          "required": false,
+          "default": 30000,
+          "description": "Wait budget in milliseconds for page reload completion."
+        }
+      ],
+      "outputs": {
+        "success": "Returns MCP text content reporting reload completion and elapsed milliseconds.",
+        "failure": "Returns MCP text content with isError=true when page reload fails or the handler crashes."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Reloads the current Gemini page with waitUntil=networkidle2, which can reset in-page transient state.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": true,
+        "notes": "Not labeled long-running, but completion is bounded by the user-supplied timeout and browser/network conditions."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() provides the session entrypoint.",
+        "src/browser.js:ensureBrowser() handles daemon-backed access and disconnect() preserves the browser after reload.",
+        "src/gemini-ops.js:reloadPage({ timeout }) wraps page.reload(waitUntil='networkidle2')."
+      ],
+      "errorModes": [
+        "reload_failed",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Page recovery is an explicit current control surface and helps unblock selector or state drift without restarting the daemon."
+      }
+    },
+    {
+      "name": "gemini_navigate_to",
+      "capabilityGroup": "session-management",
+      "parameters": [
+        {
+          "name": "url",
+          "type": "string(url)",
+          "required": true,
+          "default": null,
+          "description": "Target Gemini URL; only gemini.google.com is accepted."
+        },
+        {
+          "name": "timeout",
+          "type": "number",
+          "required": false,
+          "default": 30000,
+          "description": "Wait budget in milliseconds for navigation completion."
+        }
+      ],
+      "outputs": {
+        "success": "Returns MCP text content with the final URL and elapsed milliseconds.",
+        "failure": "Returns MCP text content with isError=true, including detail text for invalid domains or navigation failures."
+      },
+      "sideEffects": [
+        "Auto-starts or reuses the daemon-backed browser session.",
+        "Navigates the active browser tab to a specific Gemini URL, which can restore a historical chat context.",
+        "Enforces a gemini.google.com hostname whitelist before navigation.",
+        "Disconnects the CDP session on normal paths while leaving the browser alive under daemon TTL."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": true,
+        "notes": "Not labeled long-running, but completion is bounded by the user-supplied timeout and network/browser conditions."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() provides the session entrypoint.",
+        "src/browser.js:ensureBrowser() handles daemon-backed access and disconnect() preserves the browser after navigation.",
+        "src/gemini-ops.js:navigateTo(url, { timeout }) enforces the domain whitelist and performs page.goto()."
+      ],
+      "errorModes": [
+        "invalid_domain",
+        "navigate_failed",
+        "execution_crash"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Historical chat restoration is currently documented and exposed as a separate session-management command."
+      }
+    },
+    {
+      "name": "gemini_browser_info",
+      "capabilityGroup": "diagnostics-and-management",
+      "parameters": [],
+      "outputs": {
+        "success": "Returns MCP text content containing JSON for daemon URL/port/status, browser CDP port/wsEndpoint/pid/headless flag, and selected config values.",
+        "failure": "Returns MCP text content with isError=true when the daemon is unreachable or unhealthy."
+      },
+      "sideEffects": [
+        "Does not call createGeminiSession(); instead it talks to the daemon HTTP endpoints directly.",
+        "Calls /health and then /browser/acquire, so the command is not a pure read: acquire can start or reuse the browser and will reset the daemon TTL.",
+        "Exposes daemon and browser connection details such as wsEndpoint and pid in the returned JSON payload.",
+        "Unlike the other handlers, this tool does not call disconnect() because it never creates a Puppeteer CDP session."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": false,
+        "timeoutSensitive": true,
+        "notes": "Uses AbortSignal timeout guards (3s for /health, 5s for /browser/acquire) but is not documented as a long-running tool."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession() is intentionally bypassed here; this is the one public MCP tool that does not build an ops/page/browser session.",
+        "src/browser.js still defines the daemon contract this tool depends on: the same localhost daemon URL, /health probe, and /browser/acquire semantics.",
+        "src/gemini-ops.js is not used by this tool; diagnostics come directly from config plus daemon HTTP responses."
+      ],
+      "errorModes": [
+        "daemon_not_ready",
+        "daemon_unreachable",
+        "acquire_failed"
+      ],
+      "migrationStatus": {
+        "classification": "must-have-v1",
+        "reason": "Connection diagnostics are part of the current public interface and are especially important during a migration away from MCP transport."
+      }
+    }
+  ]
+}

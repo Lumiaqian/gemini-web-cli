@@ -1,0 +1,237 @@
+{
+  "schemaVersion": 1,
+  "decisionId": "migrate-mcp-client-to-native-cli-route-matrix",
+  "capabilityBaseline": ".sisyphus/specs/migrate-mcp-client-to-native-cli/parity-matrix.json",
+  "machineContractBaseline": ".sisyphus/specs/migrate-mcp-client-to-native-cli/cli-contract.md",
+  "repoFacts": [
+    "Fifteen public tools share src/mcp-server.js -> src/index.js:createGeminiSession() -> src/browser.js:ensureBrowser() -> src/gemini-ops.js, so route risk is dominated by how much of that chain can be preserved.",
+    "gemini_browser_info intentionally bypasses createGeminiSession() and talks to daemon HTTP endpoints directly, so daemon semantics are part of the public capability baseline rather than an internal detail.",
+    "The browser stack depends on puppeteer-extra-plugin-stealth in both src/browser.js and src/daemon/engine.js, plus Chrome profile cloning in src/daemon/engine.js before first launch.",
+    "The current lifecycle is a detached daemon spawned with stdio ignored, a /health probe, GET /browser/acquire, GET /browser/status, POST /browser/release, and TTL-based browser reuse plus disconnect() without browser close.",
+    "Task 2 froze machine mode to exactly one JSON envelope on stdout; current contamination hazards come from browser/daemon console logging and the process.stdout polling pattern in src/demo2.js."
+  ],
+  "scoring": {
+    "scale": {
+      "min": 1,
+      "max": 5,
+      "higherScoreMeans": "better"
+    },
+    "weights": [
+      {
+        "id": "delivery-risk",
+        "name": "Delivery risk",
+        "weight": 24,
+        "reason": "This migration blocks later implementation work, so the route must minimize parity and contract regression risk first."
+      },
+      {
+        "id": "puppeteer-cdp-reuse",
+        "name": "Reuse of existing Puppeteer/CDP logic",
+        "weight": 18,
+        "reason": "The current product behavior already lives in Node automation code, stealth wiring, and daemon lifecycle helpers."
+      },
+      {
+        "id": "packaging-quality",
+        "name": "Packaging quality",
+        "weight": 10,
+        "reason": "A native CLI should package cleanly for end users, but packaging alone does not outweigh parity or machine-mode safety."
+      },
+      {
+        "id": "runtime-performance",
+        "name": "Runtime performance",
+        "weight": 8,
+        "reason": "CPU and startup efficiency matter, but browser automation latency still dominates many commands."
+      },
+      {
+        "id": "maintainability",
+        "name": "Maintainability",
+        "weight": 14,
+        "reason": "The chosen route becomes the long-term codebase and must stay operable after the migration freeze."
+      },
+      {
+        "id": "testability",
+        "name": "Testability",
+        "weight": 8,
+        "reason": "Later tasks need route-neutral contract, parity, integration, and smoke coverage that can run in CI."
+      },
+      {
+        "id": "release-complexity",
+        "name": "Release complexity",
+        "weight": 8,
+        "reason": "Publishing should stay reproducible across macOS, Linux, and Windows without brittle multi-step handoffs."
+      },
+      {
+        "id": "daemon-lifecycle-migration-complexity",
+        "name": "Daemon and lifecycle migration complexity",
+        "weight": 10,
+        "reason": "The current detached daemon, HTTP API surface, and browser-info exception are major architecture constraints."
+      }
+    ]
+  },
+  "tieBreakRule": {
+    "thresholdPoints": 2,
+    "preferHigherCriterion": "delivery-risk",
+    "minimumScores": {
+      "maintainability": 3
+    },
+    "secondaryCriteria": [
+      "daemon-lifecycle-migration-complexity",
+      "maintainability"
+    ],
+    "finalFallback": "route-id-lexicographic-ascending"
+  },
+  "daemonStrategyOptions": [
+    {
+      "id": "keep",
+      "summary": "Keep the detached daemon topology and treat it as a private subsystem of the native CLI.",
+      "repoFit": "Best parity fit because browser-info already relies on /health and /browser/acquire semantics, and TTL reuse matches the current disconnect() behavior."
+    },
+    {
+      "id": "fold",
+      "summary": "Fold browser lifecycle into each CLI invocation and remove the detached daemon boundary.",
+      "repoFit": "Looks simple on paper, but it drops TTL reuse, makes browser-info semantics awkward, and reintroduces cold starts on every command."
+    },
+    {
+      "id": "replace",
+      "summary": "Replace the current daemon with a new lifecycle supervisor implemented by the chosen route.",
+      "repoFit": "Preserves the idea of long-lived browser ownership, but requires re-creating acquire/status/release behavior, signal handling, stealth wiring, and profile bootstrap logic."
+    }
+  ],
+  "routes": [
+    {
+      "id": "go-rewrite",
+      "label": "Go rewrite",
+      "summary": "Rewrite the CLI and browser runtime in Go, and replace the current Node daemon with a Go-native browser supervisor.",
+      "repoFacts": [
+        "Go would need to re-create the current Puppeteer-plus-stealth behavior even though the exact implementation today lives in Node libraries.",
+        "The route would also need to replace the detached daemon HTTP contract that browser-info currently uses directly.",
+        "Chrome profile clone bootstrap from src/daemon/engine.js would need a new implementation and new failure handling."
+      ],
+      "daemonStrategy": {
+        "choice": "replace",
+        "summary": "Replace the detached Node daemon with a Go-native supervisor that exposes internal acquire/status/release behavior to the CLI.",
+        "reasons": [
+          "Keeping the Node daemon would undercut the point of a full Go rewrite.",
+          "Folding the lifecycle would lose TTL reuse and make browser-info parity harder.",
+          "A replacement supervisor can preserve the long-lived browser model, but only after reimplementing current lifecycle semantics."
+        ]
+      },
+      "analysis": {
+        "strengths": [
+          "Best single-binary packaging story once the rewrite is complete.",
+          "Good runtime efficiency and strong distribution tooling."
+        ],
+        "risks": [
+          "Low reuse of existing Puppeteer, stealth, and Chrome-profile logic.",
+          "High architecture risk because machine-mode stdout guarantees and daemon behavior must be rebuilt while parity work is still pending.",
+          "Requires a fresh implementation for the current browser-info direct-daemon capability."
+        ]
+      },
+      "scores": {
+        "delivery-risk": 2,
+        "puppeteer-cdp-reuse": 1,
+        "packaging-quality": 5,
+        "runtime-performance": 4,
+        "maintainability": 3,
+        "testability": 3,
+        "release-complexity": 4,
+        "daemon-lifecycle-migration-complexity": 2
+      },
+      "weightedTotal": 53.2
+    },
+    {
+      "id": "rust-rewrite",
+      "label": "Rust rewrite",
+      "summary": "Rewrite the CLI in Rust and fold browser lifecycle into each command instead of carrying forward the detached daemon as a first-class runtime service.",
+      "repoFacts": [
+        "Rust can produce strong native artifacts, but the current browser automation behavior is not implemented in Rust today and would need net-new CDP and stealth choices.",
+        "Folding the lifecycle conflicts with the current browser-info behavior, which expects daemon health and acquire semantics rather than a one-shot process-only model.",
+        "Task 2 machine mode still needs airtight stdout discipline, so a rewrite does not remove the need for explicit stderr-only diagnostics handling."
+      ],
+      "daemonStrategy": {
+        "choice": "fold",
+        "summary": "Fold lifecycle ownership into each command process and drop the detached daemon boundary in exchange for a single-process runtime model.",
+        "reasons": [
+          "This route chases the cleanest native packaging story and avoids shipping a second long-lived process on purpose.",
+          "The cost is losing current TTL-based reuse and forcing browser startup or reconnect decisions into every command.",
+          "browser-info would need a new compatibility story because there is no standing daemon endpoint to inspect anymore."
+        ]
+      },
+      "analysis": {
+        "strengths": [
+          "Strong native packaging and excellent long-term systems-level performance ceilings.",
+          "Potentially good maintainability after the rewrite if a full Rust browser architecture already existed."
+        ],
+        "risks": [
+          "Lowest near-term reuse because the current implementation is entirely Node-based.",
+          "Folding lifecycle removes a proven operational boundary while parity and contract migration are still incomplete.",
+          "Highest daemon/lifecycle mismatch because current direct-daemon diagnostics would need replacement semantics."
+        ]
+      },
+      "scores": {
+        "delivery-risk": 1,
+        "puppeteer-cdp-reuse": 1,
+        "packaging-quality": 4,
+        "runtime-performance": 5,
+        "maintainability": 4,
+        "testability": 4,
+        "release-complexity": 3,
+        "daemon-lifecycle-migration-complexity": 1
+      },
+      "weightedTotal": 48.8
+    },
+    {
+      "id": "hybrid-native-cli-node-core",
+      "label": "Native CLI plus existing Node core",
+      "summary": "Build a native CLI shell while keeping the current Node browser and daemon core as the first migration target behind a private interface.",
+      "repoFacts": [
+        "This route preserves the current shared runtime chain used by fifteen tools and keeps browser-info on the same direct daemon semantics it already exposes.",
+        "The existing Node core already contains the stealth plugin, Chrome profile clone bootstrap, TTL lifecycle, and CDP session logic that define today's behavior.",
+        "The main remaining contract work is packaging and process boundary control so all daemon or browser logs stay off stdout in machine mode."
+      ],
+      "daemonStrategy": {
+        "choice": "keep",
+        "summary": "Keep the detached daemon model, but make it a private internal subsystem of the native CLI with stderr-only diagnostics and no public MCP dependency.",
+        "reasons": [
+          "The current detached acquire/disconnect/TTL lifecycle already matches how most commands keep the browser alive between invocations.",
+          "browser-info already depends on daemon HTTP endpoints directly, so preserving the daemon avoids inventing compatibility shims before parity work begins.",
+          "Keeping the daemon lets the native wrapper focus on machine-mode envelopes, exit codes, and packaging first while reusing proven browser behavior."
+        ]
+      },
+      "analysis": {
+        "strengths": [
+          "Highest reuse of current automation logic, daemon semantics, stealth integration, and Chrome-profile bootstrap behavior.",
+          "Lowest delivery risk because the migration can wrap existing behavior before replacing internals.",
+          "Keeps the browser-info exception intact instead of forcing an immediate redesign."
+        ],
+        "risks": [
+          "Packaging quality is weaker than a pure Go or Rust rewrite because the native CLI still carries a Node core in the near term.",
+          "Later tasks must aggressively redirect daemon/browser logging to stderr to protect the single JSON stdout envelope.",
+          "Release automation still has to supervise a mixed runtime instead of a pure single-language artifact."
+        ]
+      },
+      "scores": {
+        "delivery-risk": 5,
+        "puppeteer-cdp-reuse": 5,
+        "packaging-quality": 3,
+        "runtime-performance": 3,
+        "maintainability": 4,
+        "testability": 4,
+        "release-complexity": 3,
+        "daemon-lifecycle-migration-complexity": 5
+      },
+      "weightedTotal": 85.2
+    }
+  ],
+  "finalDecision": {
+    "selectedRoute": "hybrid-native-cli-node-core",
+    "runnerUp": "go-rewrite",
+    "selectionSummary": "Choose the native CLI plus existing Node core route first, because it preserves the current browser/daemon behavior while the new CLI wrapper absorbs the machine-mode and packaging transition.",
+    "reasons": [
+      "It is the only route that keeps both the dominant createGeminiSession runtime chain and the browser-info direct-daemon exception without immediate rearchitecture.",
+      "It reuses the current stealth plugin setup, Chrome profile clone bootstrap, TTL lifecycle, and detached daemon flow instead of re-deriving them under time pressure.",
+      "It localizes the first migration wave to native wrapper concerns: one JSON stdout envelope, stderr-only diagnostics, exit codes, packaging, and test harness integration.",
+      "The packaging downside is real, but the weighted matrix still leaves this route far ahead because parity and delivery risk are the blocking constraints right now."
+    ],
+    "tieBreakApplied": false
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-cli-release-manifest",
+  "releaseMode": "dry-run-local",
+  "packageName": "gemini-web-cli",
+  "version": "",
+  "routeId": "hybrid-native-cli-node-core",
+  "artifactId": "gemini-web-cli-hybrid-native-cli-node-core",
+  "artifactDir": "dist/native-cli/hybrid-native-cli-node-core",
+  "artifactPath": "dist/native-cli/hybrid-native-cli-node-core/run-dev.mjs",
+  "buildManifestPath": "dist/native-cli/hybrid-native-cli-node-core/manifest.json",
+  "daemonStrategy": "keep",
+  "runtime": {
+    "kind": "hybrid-private-node-core",
+    "nodeRuntime": "required",
+    "privateNodeCore": true,
+    "note": "Hybrid artifact still wraps the private Node core/runtime."
+  },
+  "nodeCoreBoundaries": [
+    {
+      "id": "session-api",
+      "adapter": "native-cli/hybrid-native-cli-node-core/src/node-core/session-bridge.mjs",
+      "source": "src/index.js"
+    },
+    {
+      "id": "daemon-api",
+      "adapter": "native-cli/hybrid-native-cli-node-core/src/node-core/daemon-bridge.mjs",
+      "source": "src/browser.js"
+    }
+  ]
+}

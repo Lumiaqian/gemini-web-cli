@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "defaultSuccessCode": 0,
+  "codes": [
+    {
+      "name": "success",
+      "exitCode": 0,
+      "description": "Command completed successfully and emitted an ok=true envelope.",
+      "retryable": false
+    },
+    {
+      "name": "invalid-args",
+      "exitCode": 2,
+      "description": "CLI flag parsing or argument schema validation failed before command execution started.",
+      "retryable": false
+    },
+    {
+      "name": "auth-failure",
+      "exitCode": 3,
+      "description": "Authentication or logged-in preconditions were not satisfied.",
+      "retryable": false
+    },
+    {
+      "name": "browser-startup-failure",
+      "exitCode": 4,
+      "description": "Daemon startup, browser launch, or browser acquisition failed before command logic completed.",
+      "retryable": true
+    },
+    {
+      "name": "selector-failure",
+      "exitCode": 5,
+      "description": "A required page element or UI state could not be located or interacted with.",
+      "retryable": true
+    },
+    {
+      "name": "timeout",
+      "exitCode": 6,
+      "description": "The command exceeded the effective timeout budget.",
+      "retryable": true
+    },
+    {
+      "name": "interrupted",
+      "exitCode": 7,
+      "description": "The command was interrupted by SIGINT, SIGTERM, or an equivalent cooperative cancellation path.",
+      "retryable": true
+    },
+    {
+      "name": "internal-error",
+      "exitCode": 8,
+      "description": "An unexpected crash or unclassified internal failure occurred.",
+      "retryable": true
+    }
+  ]
+}

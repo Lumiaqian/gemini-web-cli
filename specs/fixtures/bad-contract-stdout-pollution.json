@@ -1,0 +1,46 @@
+{
+  "fixtureVersion": 1,
+  "kind": "cli-contract-fixture",
+  "name": "bad-contract-stdout-pollution",
+  "description": "Invalid fixture proving that polling noise on stdout breaks the machine contract.",
+  "commandLine": {
+    "binary": "gemini-web-cli",
+    "subcommand": "send-message",
+    "args": [
+      "--json",
+      "--timeout-ms",
+      "60000",
+      "--request-id",
+      "req_20260328_03",
+      "--message",
+      "Explain yourself in one sentence."
+    ]
+  },
+  "expectedExitCode": 0,
+  "stdout": "polling... status=waiting\n{\"schemaVersion\":1,\"mode\":\"json\",\"command\":\"send-message\",\"requestId\":\"req_20260328_03\",\"ok\":true,\"exitCode\":0,\"timing\":{\"startedAt\":\"2026-03-28T10:10:00.000Z\",\"finishedAt\":\"2026-03-28T10:10:18.542Z\",\"durationMs\":18542},\"execution\":{\"timeoutMs\":60000,\"terminalState\":\"succeeded\",\"cancelledBySignal\":null},\"result\":{\"text\":\"Gemini is a conversational AI system for text and image workflows.\",\"responseIndex\":0,\"artifacts\":[]},\"error\":null}\n",
+  "stderr": "[browser] auto-started daemon on 127.0.0.1:40225\n",
+  "envelope": {
+    "schemaVersion": 1,
+    "mode": "json",
+    "command": "send-message",
+    "requestId": "req_20260328_03",
+    "ok": true,
+    "exitCode": 0,
+    "timing": {
+      "startedAt": "2026-03-28T10:10:00.000Z",
+      "finishedAt": "2026-03-28T10:10:18.542Z",
+      "durationMs": 18542
+    },
+    "execution": {
+      "timeoutMs": 60000,
+      "terminalState": "succeeded",
+      "cancelledBySignal": null
+    },
+    "result": {
+      "text": "Gemini is a conversational AI system for text and image workflows.",
+      "responseIndex": 0,
+      "artifacts": []
+    },
+    "error": null
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+*.log
+.DS_Store
+dist/
+output/
+.env
+.env.development
+.env.*.local
+gemini-skill.code-workspace
+gemini-image
+.gitnexus
+.claude
+AGENTS.md
+CLAUDE.md

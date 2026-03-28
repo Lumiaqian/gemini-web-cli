@@ -1,0 +1,46 @@
+{
+  "fixtureVersion": 1,
+  "kind": "cli-contract-fixture",
+  "name": "contract-success",
+  "description": "Representative machine-mode success envelope for a long-running text command.",
+  "commandLine": {
+    "binary": "gemini-web-cli",
+    "subcommand": "send-message",
+    "args": [
+      "--json",
+      "--timeout-ms",
+      "60000",
+      "--request-id",
+      "req_20260328_01",
+      "--message",
+      "Explain yourself in one sentence."
+    ]
+  },
+  "expectedExitCode": 0,
+  "stdout": "{\"schemaVersion\":1,\"mode\":\"json\",\"command\":\"send-message\",\"requestId\":\"req_20260328_01\",\"ok\":true,\"exitCode\":0,\"timing\":{\"startedAt\":\"2026-03-28T10:00:00.000Z\",\"finishedAt\":\"2026-03-28T10:00:18.542Z\",\"durationMs\":18542},\"execution\":{\"timeoutMs\":60000,\"terminalState\":\"succeeded\",\"cancelledBySignal\":null},\"result\":{\"text\":\"Gemini is a conversational AI system for text and image workflows.\",\"responseIndex\":0,\"artifacts\":[]},\"error\":null}\n",
+  "stderr": "[browser] auto-started daemon on 127.0.0.1:40225\n[poll] waiting for Gemini reply\n",
+  "envelope": {
+    "schemaVersion": 1,
+    "mode": "json",
+    "command": "send-message",
+    "requestId": "req_20260328_01",
+    "ok": true,
+    "exitCode": 0,
+    "timing": {
+      "startedAt": "2026-03-28T10:00:00.000Z",
+      "finishedAt": "2026-03-28T10:00:18.542Z",
+      "durationMs": 18542
+    },
+    "execution": {
+      "timeoutMs": 60000,
+      "terminalState": "succeeded",
+      "cancelledBySignal": null
+    },
+    "result": {
+      "text": "Gemini is a conversational AI system for text and image workflows.",
+      "responseIndex": 0,
+      "artifacts": []
+    },
+    "error": null
+  }
+}

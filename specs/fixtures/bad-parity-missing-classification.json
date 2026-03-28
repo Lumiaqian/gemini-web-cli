@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "toolCount": 1,
+  "tools": [
+    {
+      "name": "gemini_generate_image",
+      "capabilityGroup": "core-image-generation",
+      "parameters": [
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Minimal negative-test fixture entry."
+        }
+      ],
+      "outputs": {
+        "success": "Returns MCP text content on success.",
+        "failure": "Returns MCP text content with isError=true."
+      },
+      "sideEffects": [
+        "Writes a local file under config.outputDir."
+      ],
+      "longRunningNotes": {
+        "isLongRunning": true,
+        "timeoutSensitive": true,
+        "notes": "Blocks until generation completes."
+      },
+      "sharedEntrypointDependencies": [
+        "src/index.js:createGeminiSession()",
+        "src/browser.js:ensureBrowser()",
+        "src/gemini-ops.js:generateImage()"
+      ],
+      "errorModes": [
+        "generation_failed"
+      ],
+      "migrationStatus": {
+        "reason": "Intentionally missing classification so --require-classification fails."
+      }
+    }
+  ]
+}

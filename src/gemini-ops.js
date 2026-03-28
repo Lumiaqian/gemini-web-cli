@@ -1,0 +1,1206 @@
+/**
+ * gemini-ops.js — Gemini 操作高层 API
+ *
+ * 职责：
+ *   基于 operator.js 的底层原子操作，编排 Gemini 特定的业务流程。
+ *   全部通过 CDP 实现，不往页面注入任何对象。
+ */
+import { createOperator } from './operator.js';
+import { sleep } from './util.js';
+import config from './config.js';
+import { mkdirSync, existsSync } from 'node:fs';
+import { resolve as pathResolve, normalize as pathNormalize } from 'node:path';
+import { removeWatermarkFromFile, removeWatermarkFromDataUrl } from './watermark-remover.js';
+
+// ── Gemini 页面元素选择器 ──
+const SELECTORS = {
+  promptInput: [
+    'div.ql-editor[contenteditable="true"][role="textbox"]',
+    '[contenteditable="true"][aria-label*="Gemini"]',
+    '[contenteditable="true"][data-placeholder*="Gemini"]',
+    'div[contenteditable="true"][role="textbox"]',
+  ],
+  /** 输入区底部按钮的父容器（包裹麦克风 + 发送按钮） */
+  actionBtnWrapper: [
+    'div.input-buttons-wrapper-bottom',
+  ],
+  /** 麦克风容器 — class 带 hidden 时隐藏（表示输入框有文字） */
+  micContainer: [
+    'div.mic-button-container',
+  ],
+  /** 发送按钮容器 — class 带 visible 时可见（输入框有文字），否则隐藏 */
+  sendBtnContainer: [
+    'div.send-button-container',
+  ],
+  /** 发送按钮本身 — class 末尾 submit（可发送）或 stop（加载中） */
+  sendBtn: [
+    '.send-button-container button.send-button',
+    '.send-button-container button',
+  ],
+  newChatBtn: [
+    '[data-test-id="new-chat-button"] a',
+    '[data-test-id="new-chat-button"]',
+    'a[aria-label="发起新对话"]',
+    'a[aria-label*="new chat" i]',
+  ],
+  modelBtn: [
+    '[data-test-id="bard-mode-menu-button"]',      // 测试专属属性
+    'button[aria-label="打开模式选择器"]',            // 中文 aria-label
+    'button[aria-label*="mode selector" i]',        // 英文 aria-label 兜底
+    'button.mat-mdc-menu-trigger.input-area-switch',// class 组合兜底
+  ],
+  /** 模型标签文本容器（读取当前选中的模型名，如 "Pro"） */
+  modelLabel: [
+    '[data-test-id="logo-pill-label-container"] span',  // 最内层 span 包含模型名
+    'div.logo-pill-label-container span',               // class 兜底
+  ],
+  /** 模型选项：Pro */
+  modelOptionPro: [
+    '[data-test-id="bard-mode-option-pro"]',        // 中英文统一
+  ],
+  /** 模型选项：快速 / Quick */
+  modelOptionQuick: [
+    '[data-test-id="bard-mode-option-快速"]',        // 中文
+    '[data-test-id="bard-mode-option-quick"]',       // 英文
+  ],
+  /** 模型选项：思考 / Think */
+  modelOptionThink: [
+    '[data-test-id="bard-mode-option-思考"]',        // 中文
+    '[data-test-id="bard-mode-option-think"]',       // 英文
+    '[data-test-id="bard-mode-option-thinking"]',    // 英文变体
+  ],
+  tempChatBtn: [
+    '[data-test-id="temp-chat-button"]',          // 最稳定：测试专属属性
+    'button[aria-label="临时对话"]',                // 中文 aria-label
+    'button[aria-label*="temporary" i]',           // 英文 aria-label 兜底
+    'button.temp-chat-button',                     // class 名兜底
+    'button[mattooltip="临时对话"]',                // Angular Material tooltip 属性
+  ],
+  sidebarContainer: [
+    '[data-test-id="overflow-container"]',         // 测试专属属性
+    'div.overflow-container',                      // class 兜底
+  ],
+  /** 加号面板按钮（点击后弹出上传菜单） */
+  uploadPanelBtn: [
+    'button.upload-card-button[aria-haspopup="menu"]', // class + aria 组合
+    'button[aria-controls="upload-file-u"]',           // aria-controls 兜底
+    'button.upload-card-button',                       // class 兜底
+  ],
+  /** 上传文件选项（加号面板展开后的"上传文件"按钮） */
+  uploadFileBtn: [
+    '[data-test-id="uploader-images-files-button-advanced"]', // 测试专属属性
+    'images-files-uploader',                                  // 标签名兜底
+  ],
+};
+
+/**
+ * 创建 GeminiOps 操控实例
+ * @param {import('puppeteer-core').Page} page
+ */
+export function createOps(page) {
+  const op = createOperator(page);
+
+  return {
+    /** 暴露底层 operator，供高级用户直接使用 */
+    operator: op,
+
+    /** 暴露选择器定义，方便调试和外部扩展 */
+    selectors: SELECTORS,
+
+    /**
+     * 探测页面各元素是否就位
+     * @returns {Promise<{promptInput: boolean, actionBtnWrapper: boolean, newChatBtn: boolean, modelBtn: boolean, modelLabel: boolean, tempChatBtn: boolean, currentModel: string, status: object}>}
+     */
+    async probe() {
+      const [promptInput, actionBtnWrapper, newChatBtn, modelBtn, modelLabel, tempChatBtn, status, currentModelResult] = await Promise.all([
+        op.locate(SELECTORS.promptInput),
+        op.locate(SELECTORS.actionBtnWrapper),
+        op.locate(SELECTORS.newChatBtn),
+        op.locate(SELECTORS.modelBtn),
+        op.locate(SELECTORS.modelLabel),
+        op.locate(SELECTORS.tempChatBtn),
+        this.getStatus(),
+        this.getCurrentModel(),
+      ]);
+      return {
+        promptInput: promptInput.found,
+        actionBtnWrapper: actionBtnWrapper.found,
+        newChatBtn: newChatBtn.found,
+        modelBtn: modelBtn.found,
+        modelLabel: modelLabel.found,
+        tempChatBtn: tempChatBtn.found,
+        currentModel: currentModelResult.ok ? currentModelResult.raw : '',
+        status,
+      };
+    },
+
+    /**
+     * 点击指定按钮
+     * @param {'sendBtn'|'newChatBtn'|'modelBtn'|'tempChatBtn'|'modelOptionPro'|'modelOptionQuick'|'modelOptionThink'} key
+     */
+    async click(key) {
+      const sels = SELECTORS[key];
+      if (!sels) {
+        return { ok: false, error: `unknown_key: ${key}` };
+      }
+      return op.click(sels);
+    },
+
+    /**
+     * 进入临时会话模式
+     *
+     * 点击页面上的"临时会话"按钮（data-test-id="temp-chat-button"），
+     * 然后等待页面完成导航 / 刷新，确保后续操作在临时会话中进行。
+     *
+     * @param {object} [opts]
+     * @param {number} [opts.timeout=15000] - 等待页面导航完成的超时时间（ms）
+     * @returns {Promise<{ok: boolean, error?: string}>}
+     */
+    async clickTempChat(opts = {}) {
+      const { timeout = 15_000 } = opts;
+
+      const clickResult = await this.click('tempChatBtn');
+      if (!clickResult.ok) {
+        return { ok: false, error: 'temp_chat_btn_not_found' };
+      }
+      //  给一点时间让 UI 稳定
+      await sleep(500);
+
+      console.log('[ops] entered temp chat mode');
+      return { ok: true };
+    },
+
+    /**
+     * 获取当前选中的模型名称
+     *
+     * 读取模型选择按钮中 logo-pill-label-container 内的 span 文本，
+     * 返回去除空白后的小写文本（如 "pro"、"快速"、"思考"）。
+     *
+     * @returns {Promise<{ok: boolean, model: string, raw: string, error?: string}>}
+     */
+    async getCurrentModel() {
+      return op.query((sels) => {
+        let el = null;
+        for (const sel of sels) {
+          try { el = document.querySelector(sel); } catch { /* skip */ }
+          if (el) break;
+        }
+        if (!el) {
+          return { ok: false, model: '', raw: '', error: 'model_label_not_found' };
+        }
+        const raw = (el.textContent || '').trim();
+        return { ok: true, model: raw.toLowerCase(), raw };
+      }, SELECTORS.modelLabel);
+    },
+
+    /**
+     * 判断当前模型是否为 Pro
+     *
+     * @returns {Promise<boolean>}
+     */
+    async isModelPro() {
+      const result = await this.getCurrentModel();
+      if (!result.ok) return false;
+      return result.model === 'pro';
+    },
+
+    /**
+     * 切换到指定模型
+     *
+     * 流程：
+     *   1. 点击模型选择按钮，打开模型下拉菜单
+     *   2. 等待菜单出现
+     *   3. 点击目标模型选项
+     *   4. 等待 UI 稳定
+     *
+     * @param {'pro'|'quick'|'think'} model - 目标模型
+     * @returns {Promise<{ok: boolean, error?: string, previousModel?: string}>}
+     */
+    async switchToModel(model) {
+      const selectorMap = {
+        pro: SELECTORS.modelOptionPro,
+        quick: SELECTORS.modelOptionQuick,
+        think: SELECTORS.modelOptionThink,
+      };
+
+      const targetSels = selectorMap[model];
+      if (!targetSels) {
+        return { ok: false, error: `unknown_model: ${model}` };
+      }
+
+      // 记录切换前的模型
+      const before = await this.getCurrentModel();
+      const previousModel = before.ok ? before.raw : undefined;
+
+      // 1. 点击模型选择按钮，打开下拉菜单
+      const openResult = await this.click('modelBtn');
+      if (!openResult.ok) {
+        return { ok: false, error: 'model_menu_open_failed', previousModel };
+      }
+
+      // 2. 等待菜单动画展开
+      await sleep(250);
+
+      // 3. 点击目标模型选项
+      const selectResult = await op.click(targetSels);
+      if (!selectResult.ok) {
+        return { ok: false, error: `model_option_${model}_not_found`, previousModel };
+      }
+
+      // 4. 等待 UI 稳定
+      await sleep(800);
+
+      console.log(`[ops] switched model: ${previousModel || '?'} → ${model}`);
+      return { ok: true, previousModel };
+    },
+
+    /**
+     * 确保当前模型为 Pro，如果不是则自动切换
+     *
+     * @returns {Promise<{ok: boolean, switched: boolean, previousModel?: string, error?: string}>}
+     */
+    async ensureModelPro() {
+      const isPro = await this.isModelPro();
+      if (isPro) {
+        console.log('[ops] model is already Pro');
+        return { ok: true, switched: false };
+      }
+
+      console.log('[ops] model is not Pro, switching...');
+      const result = await this.switchToModel('pro');
+      if (!result.ok) {
+        return { ok: false, switched: false, error: result.error, previousModel: result.previousModel };
+      }
+
+      return { ok: true, switched: true, previousModel: result.previousModel };
+    },
+
+    /**
+     * 填写提示词（快速填充，非逐字输入）
+     * @param {string} text
+     */
+    async fillPrompt(text) {
+      return op.fill(SELECTORS.promptInput, text);
+    },
+
+    /**
+     * 获取输入区 action 按钮的详细状态
+     *
+     * 状态模型（基于 DOM class 判断）：
+     *
+     * ┌──────────────────────────────────────────────────────────────────┐
+     * │  input-buttons-wrapper-bottom（父容器）                          │
+     * │  ┌─────────────────────┐  ┌────────────────────────────────┐   │
+     * │  │ mic-button-container│  │ send-button-container          │   │
+     * │  │  class 带 hidden    │  │  class 带 visible / 无         │   │
+     * │  │  → 输入框有文字     │  │  ┌──────────────────────────┐  │   │
+     * │  │  class 无 hidden    │  │  │ button.send-button       │  │   │
+     * │  │  → 输入框为空(待命) │  │  │  class 尾 submit → 可发送│  │   │
+     * │  └─────────────────────┘  │  │  class 尾 stop   → 加载中│  │   │
+     * │                           │  └──────────────────────────┘  │   │
+     * │                           └────────────────────────────────┘   │
+     * └──────────────────────────────────────────────────────────────────┘
+     *
+     * 返回值：
+     *   - status: 'mic'     — 麦克风态（输入框为空，Gemini 待命）
+     *   - status: 'submit'  — 发送态（输入框有文字，可点击发送）
+     *   - status: 'stop'    — 加载态（Gemini 正在回答，按钮变为停止）
+     *   - status: 'unknown' — 无法识别
+     *
+     * @returns {Promise<{status: 'mic'|'submit'|'stop'|'unknown', micHidden: boolean, sendVisible: boolean, btnClass: string, error?: string}>}
+     */
+    async getStatus() {
+      return op.query((selectors) => {
+        const { micContainer: micSels, sendBtnContainer: sendSels, sendBtn: btnSels } = selectors;
+
+        // ── 查找麦克风容器 ──
+        let micEl = null;
+        for (const sel of micSels) {
+          try { micEl = document.querySelector(sel); } catch { /* skip */ }
+          if (micEl) break;
+        }
+
+        // ── 查找发送按钮容器 ──
+        let sendContainerEl = null;
+        for (const sel of sendSels) {
+          try { sendContainerEl = document.querySelector(sel); } catch { /* skip */ }
+          if (sendContainerEl) break;
+        }
+
+        // ── 查找发送按钮本身 ──
+        let btnEl = null;
+        for (const sel of btnSels) {
+          try { btnEl = document.querySelector(sel); } catch { /* skip */ }
+          if (btnEl) break;
+        }
+
+        // 都找不到则 unknown
+        if (!micEl && !sendContainerEl) {
+          return { status: 'unknown', micHidden: false, sendVisible: false, btnClass: '', error: 'containers_not_found' };
+        }
+
+        const micClass = micEl ? micEl.className : '';
+        const sendClass = sendContainerEl ? sendContainerEl.className : '';
+        const btnClass = btnEl ? btnEl.className : '';
+
+        const micHidden = /\bhidden\b/.test(micClass);
+        const sendVisible = /\bvisible\b/.test(sendClass);
+
+        // ── 判断状态 ──
+        // 1. 发送容器可见 → 看按钮 class 是 submit 还是 stop
+        if (sendVisible) {
+          if (/\bstop\b/.test(btnClass)) {
+            return { status: 'stop', micHidden, sendVisible, btnClass };
+          }
+          if (/\bsubmit\b/.test(btnClass)) {
+            return { status: 'submit', micHidden, sendVisible, btnClass };
+          }
+          // 发送容器可见但按钮 class 无法识别，降级为 submit
+          return { status: 'submit', micHidden, sendVisible, btnClass };
+        }
+
+        // 2. 麦克风未隐藏 → 待命态（输入框为空）
+        if (!micHidden) {
+          return { status: 'mic', micHidden, sendVisible, btnClass };
+        }
+
+        // 3. 麦克风隐藏但发送容器不可见 → 可能的中间状态，用按钮 class 兜底
+        if (/\bstop\b/.test(btnClass)) {
+          return { status: 'stop', micHidden, sendVisible, btnClass };
+        }
+
+        return { status: 'unknown', micHidden, sendVisible, btnClass, error: 'ambiguous_state' };
+      }, { micContainer: SELECTORS.micContainer, sendBtnContainer: SELECTORS.sendBtnContainer, sendBtn: SELECTORS.sendBtn });
+    },
+
+    /**
+     * 判断 Gemini 当前的回答状态
+     *
+     * 基于 actionBtn 状态推导：
+     *   - 'idle'       — 待命（麦克风态 或 发送态，Gemini 没在回答）
+     *   - 'answering'  — 回答中（按钮为 stop 态，Gemini 正在生成）
+     *
+     * @returns {Promise<{answering: boolean, status: 'idle'|'answering', detail: object}>}
+     */
+    async getAnswerState() {
+      const detail = await this.getActionBtnStatus();
+      const answering = detail.status === 'stop';
+      return {
+        answering,
+        status: answering ? 'answering' : 'idle',
+        detail,
+      };
+    },
+
+    /**
+     * 单次轮询状态（保活式，不阻塞）
+     */
+    async pollStatus() {
+      const status = await this.getStatus();
+      const pageVisible = await op.query(() => !document.hidden);
+      return { ...status, pageVisible, ts: Date.now() };
+    },
+
+    /**
+     * 检查生成的图片是否加载完成
+     *
+     * 通过检测页面中 div.loader.animate 元素判断：
+     *   存在 → 图片还在加载中
+     *   不存在 → 加载完毕
+     *
+     * @returns {Promise<{loaded: boolean}>}
+     */
+    async checkImageLoaded() {
+      return isImageLoaded(op);
+    },
+
+    /**
+     * 获取当前会话中所有 Gemini 的文字回复
+     *
+     * 选择器：div.response-content
+     * 直接使用 innerText 提取渲染后的文本，浏览器排版引擎会自动处理换行和格式
+     *
+     * @returns {Promise<{ok: boolean, responses: Array<{index: number, text: string}>, total: number, error?: string}>}
+     */
+    async getAllTextResponses() {
+      return op.query(() => {
+        const divs = [...document.querySelectorAll('div.response-content')];
+        if (!divs.length) {
+          return { ok: false, responses: [], total: 0, error: 'no_responses' };
+        }
+
+        const responses = divs.map((div, i) => ({
+          index: i,
+          text: (div.innerText || '').trim(),
+        }));
+
+        return { ok: true, responses, total: responses.length };
+      });
+    },
+
+    /**
+     * 获取最新一条 Gemini 文字回复
+     *
+     * 取最后一个 div.response-content，使用 innerText 提取渲染后的文本
+     *
+     * @returns {Promise<{ok: boolean, text?: string, index?: number, error?: string}>}
+     */
+    async getLatestTextResponse() {
+      return op.query(() => {
+        const divs = [...document.querySelectorAll('div.response-content')];
+        if (!divs.length) {
+          return { ok: false, error: 'no_responses' };
+        }
+
+        const last = divs[divs.length - 1];
+        return { ok: true, text: (last.innerText || '').trim(), index: divs.length - 1 };
+      });
+    },
+
+    /**
+     * 获取本次会话中所有已加载的图片
+     *
+     * 选择器逻辑：
+     *   - img.image.loaded — 历史已加载图片（不带 animate）
+     *   - img.image.animate.loaded — 最新生成的图片（带入场动画）
+     *   两者都匹配 img.image.loaded，所以用它拿全部。
+     *
+     * @returns {Promise<{ok: boolean, images: Array<{src: string, alt: string, width: number, height: number, isNew: boolean, index: number}>, total: number, newCount: number, error?: string}>}
+     */
+    async getAllImages() {
+      return op.query(() => {
+        const imgs = [...document.querySelectorAll('img.image.loaded')];
+        if (!imgs.length) {
+          return { ok: false, images: [], total: 0, newCount: 0, error: 'no_loaded_images' };
+        }
+
+        const images = imgs.map((img, i) => ({
+          src: img.src || '',
+          alt: img.alt || '',
+          width: img.naturalWidth || 0,
+          height: img.naturalHeight || 0,
+          isNew: img.classList.contains('animate'),
+          index: i,
+        }));
+
+        const newCount = images.filter(i => i.isNew).length;
+        return { ok: true, images, total: images.length, newCount };
+      });
+    },
+
+    /**
+     * 获取最新生成的图片信息
+     *
+     * 优先查找带 animate class 的图片（刚生成的），
+     * 如果没有则回退到最后一张已加载图片。
+     *
+     * @returns {Promise<{ok: boolean, src?: string, alt?: string, width?: number, height?: number, isNew?: boolean, error?: string}>}
+     */
+    async getLatestImage() {
+      return op.query(() => {
+        const newImgs = [...document.querySelectorAll('img.image.animate.loaded')];
+        const allImgs = [...document.querySelectorAll('img.image.loaded')];
+
+        if (!allImgs.length) {
+          return { ok: false, error: 'no_loaded_images' };
+        }
+
+        const img = newImgs.length > 0
+          ? newImgs[newImgs.length - 1]
+          : allImgs[allImgs.length - 1];
+        const isNew = newImgs.length > 0 && newImgs[newImgs.length - 1] === img;
+
+        return {
+          ok: true,
+          src: img.src || '',
+          alt: img.alt || '',
+          width: img.naturalWidth || 0,
+          height: img.naturalHeight || 0,
+          isNew,
+        };
+      });
+    },
+
+    /**
+    * 提取指定图片的 Base64 数据
+    *
+    * 策略（根据 URL 类型自动选择）：
+    *   A. blob: URL →
+    *      A1. Canvas drawImage（最可靠：只要 img 还在 DOM 上就能画，不受 blob revoke 影响）
+    *      A2. 页面内 fetch + FileReader（Canvas 被 taint 时兜底）
+    *   B. 非 blob URL → CDP loadNetworkResource（通过 CDP 协议绕过 CORS）
+    *
+    * @param {string} url - 目标图片的 src URL
+    * @returns {Promise<{ok: boolean, dataUrl?: string, method?: 'canvas'|'fetch'|'cdp', error?: string}>}
+     */
+   async extractImageBase64(url) {
+     if (!url) {
+       console.warn('[extractImageBase64] ❌ 未提供 url 参数');
+       return { ok: false, error: 'missing_url' };
+     }
+     console.log(`[extractImageBase64] 🔍 开始提取, url=${url.slice(0, 120)}...`);
+
+     const isBlob = url.startsWith('blob:');
+
+     // ── 策略 A: blob: URL → Canvas 绘制优先，fetch 兜底 ──
+     // blob: URL 是页面自己创建的，img 已渲染在 DOM 上，Canvas drawImage 不会被 taint。
+     // 如果 blob 已被 revoke，fetch 会失败，但 Canvas 只要 img 还在 DOM 上就能画。
+     if (isBlob) {
+       // ── A1: Canvas 提取（最可靠：只要图片还显示在页面上就能提取） ──
+       console.log('[extractImageBase64] 🎨 检测到 blob: URL，尝试 Canvas 提取...');
+       const canvasResult = await op.query((targetUrl) => {
+         const imgs = [...document.querySelectorAll('img.image.loaded')];
+         const img = imgs.find(i => i.src === targetUrl);
+         if (!img) {
+           // 如果精确匹配失败，回退到最后一张
+           const fallback = imgs[imgs.length - 1];
+           if (!fallback) return { ok: false, error: 'no_loaded_images', searched: 0 };
+           // 用最后一张图片
+           const w = fallback.naturalWidth || fallback.width;
+           const h = fallback.naturalHeight || fallback.height;
+           try {
+             const canvas = document.createElement('canvas');
+             canvas.width = w;
+             canvas.height = h;
+             canvas.getContext('2d').drawImage(fallback, 0, 0);
+             const dataUrl = canvas.toDataURL('image/png');
+             return { ok: true, dataUrl, width: w, height: h, method: 'canvas', note: 'fallback_to_last' };
+           } catch (e) {
+             return { ok: false, error: 'canvas_tainted', detail: e.message || String(e), width: w, height: h };
+           }
+         }
+         const w = img.naturalWidth || img.width;
+         const h = img.naturalHeight || img.height;
+         try {
+           const canvas = document.createElement('canvas');
+           canvas.width = w;
+           canvas.height = h;
+           canvas.getContext('2d').drawImage(img, 0, 0);
+           const dataUrl = canvas.toDataURL('image/png');
+           return { ok: true, dataUrl, width: w, height: h, method: 'canvas' };
+         } catch (e) {
+           return { ok: false, error: 'canvas_tainted', detail: e.message || String(e), width: w, height: h, needFetch: true };
+         }
+       }, url);
+
+       if (canvasResult.ok) {
+         console.log(`[extractImageBase64] ✅ Canvas 提取成功 (${canvasResult.width}x${canvasResult.height}${canvasResult.note ? ', ' + canvasResult.note : ''})`);
+
+         // 去水印处理
+         const wmResult = await removeWatermarkFromDataUrl(canvasResult.dataUrl);
+         if (wmResult.ok && !wmResult.skipped) {
+           console.log(`[extractImageBase64] 🍌 水印已移除 (${wmResult.width}×${wmResult.height}, logo=${wmResult.logoSize}px)`);
+           return { ok: true, dataUrl: wmResult.dataUrl, method: 'canvas' };
+         } else if (wmResult.skipped) {
+           console.log(`[extractImageBase64] 跳过去水印: ${wmResult.reason}`);
+         } else {
+           console.warn(`[extractImageBase64] 去水印失败（不影响提取结果）: ${wmResult.error}`);
+         }
+
+         return { ok: true, dataUrl: canvasResult.dataUrl, method: 'canvas' };
+       }
+
+       console.warn(`[extractImageBase64] ⚠ Canvas 提取失败: ${canvasResult.error}${canvasResult.detail ? ' — ' + canvasResult.detail : ''}`);
+
+       // ── A2: 页面 fetch 兜底（blob 未被 revoke 时有效） ──
+       if (canvasResult.needFetch || canvasResult.error === 'canvas_tainted') {
+         console.log('[extractImageBase64] 📦 Canvas 被污染，尝试页面内 fetch 兜底...');
+         try {
+           const fetchResult = await op.query(async (src) => {
+             try {
+               const r = await fetch(src);
+               if (!r.ok) return { ok: false, error: `fetch_status_${r.status}` };
+               const blob = await r.blob();
+               const mime = blob.type || 'image/png';
+               return await new Promise((resolve) => {
+                 const reader = new FileReader();
+                 reader.onloadend = () => resolve({ ok: true, dataUrl: reader.result, mime, method: 'fetch' });
+                 reader.onerror = () => resolve({ ok: false, error: 'filereader_error' });
+                 reader.readAsDataURL(blob);
+               });
+             } catch (err) {
+               return { ok: false, error: 'fetch_failed', detail: err.message || String(err) };
+             }
+           }, url);
+
+           if (fetchResult.ok) {
+             console.log(`[extractImageBase64] ✅ 页面 fetch 提取成功 (mime=${fetchResult.mime})`);
+
+             // 去水印处理
+             const wmResult = await removeWatermarkFromDataUrl(fetchResult.dataUrl);
+             if (wmResult.ok && !wmResult.skipped) {
+               console.log(`[extractImageBase64] 🍌 水印已移除 (${wmResult.width}×${wmResult.height}, logo=${wmResult.logoSize}px)`);
+               return { ok: true, dataUrl: wmResult.dataUrl, method: 'fetch' };
+             } else if (wmResult.skipped) {
+               console.log(`[extractImageBase64] 跳过去水印: ${wmResult.reason}`);
+             } else {
+               console.warn(`[extractImageBase64] 去水印失败（不影响提取结果）: ${wmResult.error}`);
+             }
+
+             return { ok: true, dataUrl: fetchResult.dataUrl, method: 'fetch' };
+           }
+           console.warn(`[extractImageBase64] ⚠ 页面 fetch 也失败: ${fetchResult.error}`);
+         } catch (err) {
+           console.warn(`[extractImageBase64] ❌ 页面 fetch 异常: ${err.message || String(err)}`);
+         }
+       }
+
+       return { ok: false, error: canvasResult.error || 'blob_extract_failed', detail: canvasResult.detail };
+     }
+
+     // ── 策略 B: 非 blob URL → CDP Network.loadNetworkResource（绕过 CORS） ──
+     try {
+        const client = page._client();
+        const frameId = page.mainFrame()._id;
+
+        console.log(`[extractImageBase64] 📡 CDP 请求中... frameId=${frameId}`);
+        const { resource } = await client.send('Network.loadNetworkResource', {
+          frameId,
+          url,
+          options: { disableCache: false, includeCredentials: true },
+        });
+
+        if (!resource.success) {
+          const errMsg = `CDP 请求失败: httpStatusCode=${resource.httpStatusCode || 'N/A'}`;
+          console.warn(`[extractImageBase64] ❌ ${errMsg}`);
+          return { ok: false, error: 'cdp_request_failed', detail: errMsg };
+        }
+
+        // 通过 IO.read 读取 stream 数据
+        const streamHandle = resource.stream;
+        if (!streamHandle) {
+          console.warn('[extractImageBase64] ❌ CDP 返回无 stream handle');
+          return { ok: false, error: 'cdp_no_stream' };
+        }
+
+        // 【关键修复】：CDP IO.read 分块返回的 base64 不能直接拼接字符串！
+        // 每个 chunk 是独立编码的 base64，末尾可能有 '=' 填充符，
+        // 直接 join 会导致中间插入非法字符 → 解码后数据损坏。
+        // 正确做法：先把每个 chunk 解码为 Buffer，拼接 Buffer，最后统一编码。
+        const bufferChunks = [];
+        let eof = false;
+        while (!eof) {
+          const { data, base64Encoded, eof: done } = await client.send('IO.read', {
+            handle: streamHandle,
+            size: 1024 * 1024, // 每次读 1MB
+          });
+          if (data) {
+            bufferChunks.push(base64Encoded ? Buffer.from(data, 'base64') : Buffer.from(data));
+          }
+          eof = done;
+        }
+        await client.send('IO.close', { handle: streamHandle });
+
+        const fullBuffer = Buffer.concat(bufferChunks);
+        const base64Full = fullBuffer.toString('base64');
+        // 从 response headers 推断 MIME；CDP 有时不提供，默认用 image/png
+        const mime = (resource.headers?.['content-type'] || resource.headers?.['Content-Type'] || 'image/png').split(';')[0].trim();
+        const dataUrl = `data:${mime};base64,${base64Full}`;
+
+        console.log(`[extractImageBase64] ✅ CDP 提取成功 (mime=${mime}, size=${(base64Full.length * 0.75 / 1024).toFixed(1)}KB)`);
+
+        // 去水印处理
+        const wmResult = await removeWatermarkFromDataUrl(dataUrl);
+        if (wmResult.ok && !wmResult.skipped) {
+          console.log(`[extractImageBase64] 🍌 水印已移除 (${wmResult.width}×${wmResult.height}, logo=${wmResult.logoSize}px)`);
+          return { ok: true, dataUrl: wmResult.dataUrl, method: 'cdp' };
+        } else if (wmResult.skipped) {
+          console.log(`[extractImageBase64] 跳过去水印: ${wmResult.reason}`);
+        } else {
+          console.warn(`[extractImageBase64] 去水印失败（不影响提取结果）: ${wmResult.error}`);
+        }
+
+        return { ok: true, dataUrl, method: 'cdp' };
+      } catch (err) {
+        const errMsg = err.message || String(err);
+        console.warn(`[extractImageBase64] ❌ CDP 提取异常: ${errMsg}`);
+        return { ok: false, error: 'cdp_error', detail: errMsg };
+      }
+    },
+
+    /**
+     * 下载最新图片到本地文件（委托给 downloadFullSizeImage，不依赖 UI 下载按钮）
+     */
+    async downloadLatestImage() {
+      return this.downloadFullSizeImage();
+    },
+
+    /**
+     * 下载完整尺寸的图片
+     *
+     * 流程：
+     *   1. 定位目标图片，获取 src URL
+     *   2. 通过 CDP Network.loadNetworkResource 直接获取图片二进制数据
+     *   3. 将二进制数据保存到 config.outputDir
+     *   4. 自动去水印处理
+     *   5. 返回实际保存的文件路径
+     *
+     * 注意：此方法不依赖任何 UI 下载按钮，直接通过 CDP 网络层获取图片，
+     * 兼容 Gemini 页面 DOM 结构变更。
+     *
+     * @param {object} [options]
+     * @param {number} [options.index] - 图片索引（从0开始，从旧到新），不传则取最新一张
+     * @returns {Promise<{ok: boolean, filePath?: string, suggestedFilename?: string, src?: string, index?: number, total?: number, error?: string}>}
+     */
+    async downloadFullSizeImage({ index } = {}) {
+      // 1. 获取目标图片的 src URL 和元数据
+      const imgInfo = await op.query((targetIndex) => {
+        const imgs = [...document.querySelectorAll('img.image.loaded')];
+        if (!imgs.length) return { ok: false, error: 'no_loaded_images', total: 0 };
+
+        const i = targetIndex == null ? imgs.length - 1 : targetIndex;
+        if (i < 0 || i >= imgs.length) {
+          return { ok: false, error: 'index_out_of_range', total: imgs.length, requestedIndex: i };
+        }
+
+        const img = imgs[i];
+        return {
+          ok: true,
+          src: img.src || '',
+          width: img.naturalWidth || 0,
+          height: img.naturalHeight || 0,
+          index: i,
+          total: imgs.length,
+        };
+      }, index);
+
+      if (!imgInfo.ok) return imgInfo;
+
+      const imgSrc = imgInfo.src;
+      console.log(`[downloadFullSizeImage] 目标图片: index=${imgInfo.index}, src=${imgSrc.slice(0, 120)}...`);
+
+      if (!imgSrc) {
+        return { ok: false, error: 'empty_image_src', index: imgInfo.index, total: imgInfo.total };
+      }
+
+      const downloadDir = pathResolve(config.outputDir);
+      mkdirSync(downloadDir, { recursive: true });
+      const { join } = await import('node:path');
+      const { writeFileSync } = await import('node:fs');
+
+      const isBlob = imgSrc.startsWith('blob:');
+
+      try {
+        let fullBuffer;
+        let ext = '.png';
+
+        if (isBlob) {
+          // blob: URL → 通过 extractImageBase64 (Canvas/fetch) 提取，再解码为 Buffer
+          console.log('[downloadFullSizeImage] blob: URL，走 extractImageBase64 路径');
+          const b64Result = await this.extractImageBase64(imgSrc);
+          if (!b64Result.ok) {
+            return { ok: false, error: b64Result.error, detail: b64Result.detail, src: imgSrc, index: imgInfo.index, total: imgInfo.total };
+          }
+
+          // extractImageBase64 已经做过去水印，解析 data URL 得到 Buffer
+          const match = b64Result.dataUrl.match(/^data:([^;]+);base64,(.+)$/s);
+          if (!match) {
+            return { ok: false, error: 'invalid_data_url', src: imgSrc, index: imgInfo.index, total: imgInfo.total };
+          }
+
+          const mime = match[1];
+          fullBuffer = Buffer.from(match[2], 'base64');
+          const mimeExtMap = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' };
+          ext = mimeExtMap[mime] || '.png';
+          console.log(`[downloadFullSizeImage] blob 提取成功, 大小=${(fullBuffer.length / 1024).toFixed(1)}KB, mime=${mime}`);
+        } else {
+          // 非 blob URL → CDP Network.loadNetworkResource 直接获取二进制数据
+          const client = page._client();
+          const frameId = page.mainFrame()._id;
+
+          console.log(`[downloadFullSizeImage] CDP 请求中... frameId=${frameId}`);
+          const { resource } = await client.send('Network.loadNetworkResource', {
+            frameId,
+            url: imgSrc,
+            options: { disableCache: false, includeCredentials: true },
+          });
+
+          if (!resource.success) {
+            const errMsg = `CDP 请求失败: httpStatusCode=${resource.httpStatusCode || 'N/A'}`;
+            console.warn(`[downloadFullSizeImage] ${errMsg}`);
+            return { ok: false, error: 'cdp_request_failed', detail: errMsg, src: imgSrc, index: imgInfo.index, total: imgInfo.total };
+          }
+
+          const streamHandle = resource.stream;
+          if (!streamHandle) {
+            console.warn('[downloadFullSizeImage] CDP 返回无 stream handle');
+            return { ok: false, error: 'cdp_no_stream', src: imgSrc, index: imgInfo.index, total: imgInfo.total };
+          }
+
+          const bufferChunks = [];
+          let eof = false;
+          while (!eof) {
+            const { data, base64Encoded, eof: done } = await client.send('IO.read', {
+              handle: streamHandle,
+              size: 1024 * 1024,
+            });
+            if (data) {
+              bufferChunks.push(base64Encoded ? Buffer.from(data, 'base64') : Buffer.from(data));
+            }
+            eof = done;
+          }
+          await client.send('IO.close', { handle: streamHandle });
+
+          fullBuffer = Buffer.concat(bufferChunks);
+          const contentType = (resource.headers?.['content-type'] || resource.headers?.['Content-Type'] || 'image/png').split(';')[0].trim();
+          const ctExtMap = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' };
+          ext = ctExtMap[contentType] || '.png';
+          console.log(`[downloadFullSizeImage] CDP 获取成功, 大小=${(fullBuffer.length / 1024).toFixed(1)}KB`);
+
+          // 非 blob 路径：保存文件后再做去水印（blob 路径在 extractImageBase64 中已处理）
+          const tempFilename = `gemini_fullsize_${Date.now()}${ext}`;
+          const tempPath = join(downloadDir, tempFilename);
+          writeFileSync(tempPath, fullBuffer);
+
+          const wmResult = await removeWatermarkFromFile(tempPath);
+          if (wmResult.ok && !wmResult.skipped) {
+            console.log(`[downloadFullSizeImage] 水印已移除 (${wmResult.width}×${wmResult.height}, logo=${wmResult.logoSize}px)`);
+          } else if (wmResult.skipped) {
+            console.log(`[downloadFullSizeImage] 跳过去水印: ${wmResult.reason}`);
+          } else {
+            console.warn(`[downloadFullSizeImage] 去水印失败（不影响下载结果）: ${wmResult.error}`);
+          }
+
+          return {
+            ok: true,
+            filePath: tempPath,
+            suggestedFilename: tempFilename,
+            src: imgSrc,
+            index: imgInfo.index,
+            total: imgInfo.total,
+          };
+        }
+
+        // blob 路径：直接保存（extractImageBase64 已去水印）
+        const suggestedFilename = `gemini_fullsize_${Date.now()}${ext}`;
+        const filePath = join(downloadDir, suggestedFilename);
+        writeFileSync(filePath, fullBuffer);
+        console.log(`[downloadFullSizeImage] 已保存: ${filePath}`);
+
+        return {
+          ok: true,
+          filePath,
+          suggestedFilename,
+          src: imgSrc,
+          index: imgInfo.index,
+          total: imgInfo.total,
+        };
+      } catch (err) {
+        const errMsg = err.message || String(err);
+        console.warn(`[downloadFullSizeImage] 下载异常: ${errMsg}`);
+        return {
+          ok: false,
+          error: errMsg,
+          src: imgSrc,
+          index: imgInfo.index,
+          total: imgInfo.total,
+        };
+      }
+    },
+
+    // ─── 高层组合操作 ───
+
+    /**
+     * 刷新当前页面
+     *
+     * 适用于页面卡住、状态异常等场景。
+     * 刷新后会等待页面重新加载完成（waitUntil: networkidle2）。
+     *
+     * @param {object} [options]
+     * @param {number} [options.timeout=30000] - 等待页面加载的超时时间（ms）
+     * @returns {Promise<{ok: boolean, elapsed?: number, error?: string, detail?: string}>}
+     */
+    async reloadPage({ timeout = 30_000 } = {}) {
+      try {
+        const start = Date.now();
+        await page.reload({ waitUntil: 'networkidle2', timeout });
+        const elapsed = Date.now() - start;
+        console.log(`[ops] 页面刷新完成 (${elapsed}ms)`);
+        return { ok: true, elapsed };
+      } catch (e) {
+        return { ok: false, error: 'reload_failed', detail: e.message };
+      }
+    },
+
+    /**
+     * 导航到指定的 Gemini 页面 URL
+     *
+     * 仅允许 gemini.google.com 域名下的地址（如指定会话 URL），
+     * 其他域名会直接拒绝，防止浏览器被劫持到不安全页面。
+     *
+     * @param {string} url - 目标 URL，必须是 gemini.google.com 域名
+     * @param {object} [options]
+     * @param {number} [options.timeout=30000] - 等待页面加载的超时时间（ms）
+     * @returns {Promise<{ok: boolean, url?: string, elapsed?: number, error?: string, detail?: string}>}
+     */
+    async navigateTo(url, { timeout = 30_000 } = {}) {
+      try {
+        // 域名白名单校验
+        const parsed = new URL(url);
+        if (parsed.hostname !== 'gemini.google.com') {
+          return {
+            ok: false,
+            error: 'invalid_domain',
+            detail: `仅允许 gemini.google.com 域名，收到: ${parsed.hostname}`,
+          };
+        }
+
+        const start = Date.now();
+        await page.goto(url, { waitUntil: 'networkidle2', timeout });
+        const elapsed = Date.now() - start;
+        const finalUrl = page.url();
+        console.log(`[ops] 页面导航完成 → ${finalUrl} (${elapsed}ms)`);
+        return { ok: true, url: finalUrl, elapsed };
+      } catch (e) {
+        return { ok: false, error: 'navigate_failed', detail: e.message };
+      }
+    },
+
+    /**
+     * 上传图片到 Gemini 输入框
+     *
+     * 流程：
+     *   1. 点击加号面板按钮，展开上传菜单
+     *   2. 等待 300ms 让菜单动画稳定
+     *   3. 拦截文件选择器 + 点击"上传文件"按钮（Promise.all 并发）
+     *   4. 向文件选择器塞入指定图片路径
+     *   5. 轮询等待图片加载完成（.image-preview.loading 消失）
+     *
+     * @param {string} filePath - 本地图片的绝对路径
+     * @returns {Promise<{ok: boolean, elapsed?: number, warning?: string, error?: string, detail?: string}>}
+     */
+    async uploadImage(filePath) {
+      try {
+        // 路径规范化（兼容 Windows 反斜杠、混合斜杠等）
+        filePath = pathResolve(pathNormalize(filePath));
+
+        if (!existsSync(filePath)) {
+          return { ok: false, error: 'file_not_found', detail: `文件不存在: ${filePath}` };
+        }
+
+        // 1. 点击加号面板按钮，展开上传菜单
+        const panelClick = await this.click('uploadPanelBtn');
+        if (!panelClick.ok) {
+          return { ok: false, error: 'upload_panel_click_failed', detail: panelClick.error };
+        }
+
+        // 2. 等待菜单动画稳定
+        await sleep(250);
+
+        // 3. Promise.all 是精髓：一边开始监听文件选择器弹窗，一边点击"上传文件"按钮
+        const [fileChooser] = await Promise.all([
+          page.waitForFileChooser({ timeout: 5_000 }),
+          this.click('uploadFileBtn'),
+        ]);
+
+        // 4. 弹窗被拦截，塞入文件
+        await fileChooser.accept([filePath]);
+        console.log(`[ops] 文件已塞入，等待 Gemini 加载图片...`);
+
+        // 5. 等待图片加载完成（.image-preview.loading 消失）
+        const loadTimeout = 15_000;
+        const loadInterval = 500;
+        const loadStart = Date.now();
+        await sleep(500); //  短暂等待 UI 响应
+        while (Date.now() - loadStart < loadTimeout) {
+          const loading = await op.query(() => {
+            const el = document.querySelector('.image-preview.loading');
+            return !!el;
+          });
+          if (!loading) {
+            console.log(`[ops] 图片上传成功 (${Date.now() - loadStart}ms): ${filePath}`);
+            return { ok: true, elapsed: Date.now() - loadStart };
+          }
+          await sleep(loadInterval);
+        }
+
+        // 超时了但文件已经塞进去了，不算完全失败
+        console.warn(`[ops] 图片加载超时 (${loadTimeout}ms)，但文件已提交`);
+        return { ok: true, warning: 'load_timeout', elapsed: Date.now() - loadStart };
+      } catch (e) {
+        return { ok: false, error: 'upload_image_failed', detail: e.message };
+      }
+    },
+
+    /**
+     * 发送提示词并等待生成完成
+     * @param {string} prompt
+     * @param {object} [opts]
+     * @param {number} [opts.timeout=120000]
+     * @param {number} [opts.interval=8000]
+     * @param {(status: object) => void} [opts.onPoll]
+     * @returns {Promise<{ok: boolean, elapsed: number, finalStatus?: object, error?: string}>}
+     */
+    async sendAndWait(prompt, opts = {}) {
+      const { timeout = 120_000, interval = 1_000, onPoll } = opts;
+
+      // 1. 填写
+      const fillResult = await this.fillPrompt(prompt);
+      if (!fillResult.ok) {
+        return { ok: false, error: 'fill_failed', detail: fillResult, elapsed: 0 };
+      }
+
+      // 短暂等待 UI 响应
+      await sleep(300);
+
+      // 2. 点击发送
+      const clickResult = await this.click('sendBtn');
+      if (!clickResult.ok) {
+        return { ok: false, error: 'send_click_failed', detail: clickResult, elapsed: 0 };
+      }
+
+      // 3. 轮询等待（回到麦克风态 = Gemini 回答完毕）
+      const start = Date.now();
+      let lastStatus = null;
+
+      while (Date.now() - start < timeout) {
+        await sleep(interval);
+
+        const poll = await this.pollStatus();
+        lastStatus = poll;
+        onPoll?.(poll);
+
+        if (poll.status === 'mic') {
+          // 回复完成，自动提取最新文字回复
+          const textResp = await this.getLatestTextResponse();
+          return {
+            ok: true,
+            elapsed: Date.now() - start,
+            finalStatus: poll,
+            text: textResp.ok ? textResp.text : null,
+            textIndex: textResp.ok ? textResp.index : null,
+          };
+        }
+        if (poll.status === 'unknown') {
+          console.warn('[ops] unknown status, may need screenshot to debug');
+        }
+      }
+
+      return { ok: false, error: 'timeout', elapsed: Date.now() - start, finalStatus: lastStatus };
+    },
+
+    /**
+     * 完整生图流程：发送提示词 → 等待 → 提取图片
+     * 注意：新建会话、上传参考图等前置操作由调用方负责
+     * @param {string} prompt
+     * @param {object} [opts]
+     * @param {number} [opts.timeout=120000]
+     * @param {boolean} [opts.fullSize=false] - true 时通过 CDP 拦截下载完整尺寸原图到 outputDir；false 时提取页面预览图 base64
+     * @param {(status: object) => void} [opts.onPoll]
+     */
+    async generateImage(prompt, opts = {}) {
+      const { timeout = 120_000, fullSize = false, onPoll } = opts;
+
+      // 1. 发送并等待
+      const waitResult = await this.sendAndWait(prompt, { timeout, onPoll });
+      if (!waitResult.ok) {
+        return { ...waitResult, step: 'sendAndWait' };
+      }
+
+      // 3. 等图片渲染完成
+      await sleep(2000);
+
+      // 4. 获取图片
+      let imgInfo = await this.getLatestImage();
+      if (!imgInfo.ok) {
+        await sleep(3000);
+        imgInfo = await this.getLatestImage();
+        if (!imgInfo.ok) {
+          return { ok: false, error: 'no_image_found', elapsed: waitResult.elapsed, imgInfo };
+        }
+      }
+
+      // 5. 提取 / 下载
+      if (fullSize) {
+        // 完整尺寸下载：通过 CDP 拦截，文件保存到 config.outputDir
+        const dlResult = await this.downloadFullSizeImage();
+        return { ok: dlResult.ok, method: 'fullSize', elapsed: waitResult.elapsed, ...dlResult };
+      } else {
+        // 低分辨率：提取页面预览图的 base64
+        const b64Result = await this.extractImageBase64(imgInfo.src);
+        return { ok: b64Result.ok, method: b64Result.method, elapsed: waitResult.elapsed, ...b64Result };
+      }
+    },
+
+    /** 底层 page 引用 */
+    get page() {
+      return page;
+    },
+
+    /**
+     * 检查是否已登录 Google 账号
+     *
+     * @returns {Promise<{ok: boolean, loggedIn: boolean, barText?: string, error?: string}>}
+     */
+    async checkLogin() {
+      return isLoggedIn(op);
+    },
+  };
+}
+
+/**
+ * 判断侧边栏是否处于展开状态（内部工具函数，不对外暴露）
+ *
+ * 通过 overflow-container 元素的实际渲染宽度判断：
+ *   - width >= 100px → 展开
+ *   - width <  100px → 折叠
+ *
+ * @param {ReturnType<typeof createOperator>} op
+ * @returns {Promise<{ok: boolean, expanded: boolean, width: number, error?: string}>}
+ */
+function isSidebarExpanded(op) {
+  return op.query((sels) => {
+    let el = null;
+    for (const sel of sels) {
+      try { el = document.querySelector(sel); } catch { /* skip */ }
+      if (el) break;
+    }
+    if (!el) {
+      return { ok: false, expanded: false, width: 0, error: 'sidebar_container_not_found' };
+    }
+    const width = el.getBoundingClientRect().width;
+    return { ok: true, expanded: width >= 100, width };
+  }, SELECTORS.sidebarContainer);
+}
+
+/**
+ * 检查生成的图片是否加载完成
+ *
+ * 判断依据：页面中是否存在 div.loader.animate 元素。
+ * 存在 → 图片还在加载；不存在 → 加载完毕。
+ *
+ * @param {ReturnType<typeof createOperator>} op
+ * @returns {Promise<{loaded: boolean}>}
+ */
+function isImageLoaded(op) {
+  return op.query(() => {
+    const loader = document.querySelector('div.loader.animate');
+    return { loaded: !loader };
+  });
+}
+
+/**
+ * 检查是否已登录 Google 账号
+ *
+ * 判断依据：顶部导航栏 div.boqOnegoogleliteOgbOneGoogleBar 的 innerText
+ * 包含"登录"或"sign in"（不区分大小写）则视为未登录
+ *
+ * @param {ReturnType<typeof createOperator>} op
+ * @returns {Promise<{ok: boolean, loggedIn: boolean, barText?: string, error?: string}>}
+ */
+function isLoggedIn(op) {
+  return op.query(() => {
+    const bar = document.querySelector('div.boqOnegoogleliteOgbOneGoogleBar');
+    if (!bar) {
+      return { ok: false, loggedIn: false, error: 'login_bar_not_found' };
+    }
+
+    const text = (bar.innerText || '').trim();
+    const lower = text.toLowerCase();
+    const notLoggedIn = lower.includes('登录') || lower.includes('sign in');
+
+    return { ok: true, loggedIn: !notLoggedIn, barText: text };
+  });
+}
+
+
