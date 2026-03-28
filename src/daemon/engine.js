@@ -9,18 +9,13 @@
  *   browser.js 面向 Skill 直接调用（ensureBrowser → 拿到 page）；
  *   engine.js 面向 Daemon 服务（只管浏览器进程生命周期，不关心具体页面）。
  */
-import puppeteerCore from 'puppeteer-core';
-import { addExtra } from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { createConnection } from 'node:net';
 import { existsSync, mkdirSync, cpSync } from 'node:fs';
 import { platform, homedir } from 'node:os';
 import { join, basename } from 'node:path';
 import config from '../config.js';
-
-// ── Stealth 包装 ──
-const puppeteer = addExtra(puppeteerCore);
-puppeteer.use(StealthPlugin());
+import puppeteer from '../puppeteer-singleton.js';
+import { BrowserNotFoundError } from '../errors.js';
 
 // ── 单例 ──
 let _browser = null;
@@ -268,11 +263,10 @@ export async function ensureBrowserForDaemon() {
     }
   }
 
-  // 3. 启动新浏览器
   const executablePath = config.browserPath || detectBrowser();
   if (!executablePath) {
-    throw new Error(
-      `[engine] 未找到可用浏览器。请设置 BROWSER_PATH 或安装 Chrome/Edge。`
+    throw new BrowserNotFoundError(
+      '未找到可用浏览器。请设置 BROWSER_PATH 或安装 Chrome/Edge。'
     );
   }
 

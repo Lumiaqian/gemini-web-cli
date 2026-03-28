@@ -23,52 +23,38 @@ const ALPHA_THRESHOLD = 0.002; // 忽略极小的 alpha 值（噪声）
 const MAX_ALPHA = 0.99;        // 避免除以接近零的值
 const LOGO_VALUE = 255;        // 白色水印的颜色值
 
-// ── Alpha Map 缓存 ──
+// ── Alpha Map 缓存（带过期机制） ──
+const ALPHA_CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 小时
 const alphaMapCache = {};
 
 /**
- * 从水印背景捕获图中计算 Alpha Map
- * @param {Buffer} pngBuffer - 水印背景捕获图的 PNG 数据
- * @param {number} size - 水印尺寸（48 或 96）
- * @returns {Promise<Float32Array>} alpha 值数组（0.0 ~ 1.0）
+ * 清理过期的缓存条目
  */
-async function calculateAlphaMap(pngBuffer, size) {
-  const { data, info } = await sharp(pngBuffer)
-    .resize(size, size)
-    .raw()
-    .ensureAlpha()
-    .toBuffer({ resolveWithObject: true });
-
-  const pixelCount = info.width * info.height;
-  const alphaMap = new Float32Array(pixelCount);
-  const channels = info.channels; // 4 (RGBA)
-
-  for (let i = 0; i < pixelCount; i++) {
-    const idx = i * channels;
-    const r = data[idx];
-    const g = data[idx + 1];
-    const b = data[idx + 2];
-    // 取 RGB 三通道最大值归一化
-    alphaMap[i] = Math.max(r, g, b) / 255.0;
+function cleanExpiredCache() {
+  const now = Date.now();
+  for (const [size, entry] of Object.entries(alphaMapCache)) {
+    if (now - entry.timestamp > ALPHA_CACHE_MAX_AGE_MS) {
+      delete alphaMapCache[size];
+    }
   }
-
-  return alphaMap;
 }
 
 /**
- * 获取指定尺寸的 Alpha Map（带缓存）
+ * 获取指定尺寸的 Alpha Map（带缓存和过期机制）
  * @param {number} size - 48 或 96
  * @returns {Promise<Float32Array>}
  */
 async function getAlphaMap(size) {
-  if (alphaMapCache[size]) return alphaMapCache[size];
+  cleanExpiredCache();
+  const entry = alphaMapCache[size];
+  if (entry) return entry.alphaMap;
 
   const bgFile = size === 48 ? 'bg_48.png' : 'bg_96.png';
   const bgPath = join(__dirname, 'assets', bgFile);
   const bgBuffer = readFileSync(bgPath);
 
   const alphaMap = await calculateAlphaMap(bgBuffer, size);
-  alphaMapCache[size] = alphaMap;
+  alphaMapCache[size] = { alphaMap, timestamp: Date.now() };
   return alphaMap;
 }
 

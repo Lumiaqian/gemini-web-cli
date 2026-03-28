@@ -17,15 +17,10 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import puppeteerCore from 'puppeteer-core';
-import { addExtra } from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import config from './config.js';
 import { sleep } from './util.js';
-
-// connect 也套上 Stealth，双保险
-const puppeteer = addExtra(puppeteerCore);
-puppeteer.use(StealthPlugin());
+import { DaemonStartupError, DaemonConnectionError } from './errors.js';
+import puppeteer from './puppeteer-singleton.js';
 
 // ── 路径常量 ──
 const __filename = fileURLToPath(import.meta.url);
@@ -101,7 +96,7 @@ async function ensureDaemon() {
     }
   }
 
-  throw new Error(
+  throw new DaemonStartupError(
     `Daemon 自动启动超时（${DAEMON_READY_TIMEOUT / 1000}s 内未响应 /health）！\n` +
     `请检查端口 ${config.daemonPort} 是否被占用，或手动运行: npm run daemon`
   );
@@ -166,12 +161,12 @@ export async function ensureBrowser() {
 
     if (!acquireData.ok) {
       const detail = acquireData.detail ? ` (${acquireData.detail})` : '';
-      throw new Error(`${acquireData.error || 'Daemon 返回失败'}${detail}`);
+      throw new DaemonConnectionError(`${acquireData.error || 'Daemon 返回失败'}${detail}`);
     }
   } catch (err) {
-    throw new Error(
-      `Daemon 已启动但获取浏览器失败！\n` +
-      `底层报错: ${err.message}`
+    if (err instanceof DaemonConnectionError) throw err;
+    throw new DaemonConnectionError(
+      `Daemon 已启动但获取浏览器失败！\n底层报错: ${err.message}`
     );
   }
 

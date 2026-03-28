@@ -12,6 +12,28 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { resolve as pathResolve, normalize as pathNormalize } from 'node:path';
 import { removeWatermarkFromFile, removeWatermarkFromDataUrl } from './watermark-remover.js';
 
+/**
+ * 安全将 IO.read 返回的 data 转换为 Buffer
+ * @param {string|Buffer|Uint8Array} data
+ * @param {boolean} base64Encoded
+ * @returns {Buffer}
+ */
+function ioReadDataToBuffer(data, base64Encoded) {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+  if (base64Encoded) {
+    return Buffer.from(data, 'base64');
+  }
+  if (typeof data === 'string') {
+    return Buffer.from(data);
+  }
+  if (data instanceof Uint8Array) {
+    return Buffer.from(data);
+  }
+  return Buffer.from(String(data));
+}
+
 // ── Gemini 页面元素选择器 ──
 const SELECTORS = {
   promptInput: [
@@ -685,7 +707,7 @@ export function createOps(page) {
             size: 1024 * 1024, // 每次读 1MB
           });
           if (data) {
-            bufferChunks.push(base64Encoded ? Buffer.from(data, 'base64') : Buffer.from(data));
+            bufferChunks.push(ioReadDataToBuffer(data, base64Encoded));
           }
           eof = done;
         }
@@ -835,7 +857,7 @@ export function createOps(page) {
               size: 1024 * 1024,
             });
             if (data) {
-              bufferChunks.push(base64Encoded ? Buffer.from(data, 'base64') : Buffer.from(data));
+              bufferChunks.push(ioReadDataToBuffer(data, base64Encoded));
             }
             eof = done;
           }

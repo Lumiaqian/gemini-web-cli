@@ -21,6 +21,12 @@ const SUITES = [
     script: 'native-cli/hybrid-native-cli-node-core/test/scaffold-test-entry.mjs',
     args: [],
   },
+  {
+    id: 'core-modules',
+    description: 'Unit tests for errors.js, util.js, config.js, puppeteer-singleton.js.',
+    script: 'test/unit/core-modules-test.mjs',
+    args: [],
+  },
 ];
 
 function fail(message) {
