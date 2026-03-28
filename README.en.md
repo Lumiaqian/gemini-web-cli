@@ -156,7 +156,15 @@ Cradling shattered dreams and the story we made."
 - Access to `gemini.google.com`
 - A Google account already signed in through the target browser profile
 
-### Install Dependencies
+### Install via npm (recommended)
+
+```bash
+npm install -g gemini-web-cli
+```
+
+After installation, the `gemini-web-cli` command is available globally.
+
+### Install from source
 
 ```bash
 git clone https://github.com/Lumiaqian/gemini-web-cli.git

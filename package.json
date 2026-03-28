@@ -6,6 +6,29 @@
   "bin": {
     "gemini-web-cli": "scripts/run-cli.mjs"
   },
+  "files": [
+    "src/",
+    "scripts/",
+    "native-cli/",
+    "markdown/",
+    "references/",
+    "specs/",
+    ".env.example",
+    "LICENSE",
+    "README.md",
+    "README.en.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lumiaqian/gemini-web-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Lumiaqian/gemini-web-cli/issues"
+  },
+  "homepage": "https://github.com/Lumiaqian/gemini-web-cli#readme",
   "scripts": {
     "cli": "node scripts/run-cli.mjs",
     "build": "node scripts/build-cli.mjs --selected-route hybrid-native-cli-node-core",
@@ -25,9 +48,9 @@
     "ai-image-generation",
     "browser-automation"
   ],
-  "author": "",
+  "author": "Lumiaqian",
   "license": "MIT",
-  "description": "通过 CDP 驱动 Gemini 网页的命令行工具，支持 AI 问答、生图与浏览器自动化",
+  "description": "CLI-first Gemini web automation via CDP — AI chat, image generation, session management with machine-safe JSON output",
   "dependencies": {
     "puppeteer-core": "^24.39.1",
     "puppeteer-extra": "^3.3.6",

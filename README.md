@@ -16,7 +16,17 @@ Gemini Web CLI 是一个通过 CDP 驱动 Gemini 网页的命令行工具，面�
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 安装
+
+**通过 npm 全局安装（推荐）**
+
+```bash
+npm install -g gemini-web-cli
+```
+
+安装后可以直接使用 `gemini-web-cli` 命令。
+
+**从源码安装**
 
 ```bash
 git clone https://github.com/Lumiaqian/gemini-web-cli.git
