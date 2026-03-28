@@ -1,6 +1,6 @@
 # Gemini Web CLI
 
-[![npm version](https://img.shields.io/badge/npm-v1.0.0-blue.svg)](https://www.npmjs.com/package/@lumiaqian/gemini-web-cli)
+[![npm version](https://img.shields.io/badge/npm-v1.0.2-blue.svg)](https://www.npmjs.com/package/@lumiaqian/gemini-web-cli)
 
 Gemini Web CLI 是一个通过 CDP 驱动 Gemini 网页的命令行工具，面向脚本、自动化流程和 CI 场景，提供稳定的 JSON 机器输出、明确的退出码，以及围绕对话、生图和浏览器诊断的一组 CLI 命令。
 
@@ -8,7 +8,7 @@ Gemini Web CLI 是一个通过 CDP 驱动 Gemini 网页的命令行工具，面�
 
 ## 当前状态
 
-- 主入口: `node scripts/run-cli.mjs`
+- 主入口: `gemini-web-cli`（全局安装后）或 `node scripts/run-cli.mjs`（源码）
 - npm script 入口: `npm run cli --`
 - 机器模式: `--json` 时 stdout 只输出一个 JSON 文档，诊断信息只走 stderr
 - 选定路线: `hybrid-native-cli-node-core`
@@ -39,21 +39,28 @@ npm install
 ### 2. 查看 CLI 命令树
 
 ```bash
-node scripts/run-cli.mjs --help
+gemini-web-cli --help
+# 或源码: node scripts/run-cli.mjs --help
 ```
 
 ### 3. 用机器模式检查当前路由和命令树
 
 ```bash
-node scripts/run-cli.mjs describe-scaffold --json
+gemini-web-cli describe-scaffold --json
+# 或源码: node scripts/run-cli.mjs describe-scaffold --json
 ```
 
 ### 4. 执行真实 CLI 命令
 
 ```bash
-node scripts/run-cli.mjs diagnostic browser-info --json
-node scripts/run-cli.mjs conversation send-message --message "你好" --json
-node scripts/run-cli.mjs image generate-image --prompt "一只戴耳机的橘猫" --timeout-ms 180000 --json
+gemini-web-cli diagnostic browser-info --json
+gemini-web-cli conversation send-message --message "你好" --json
+gemini-web-cli image generate-image --prompt "一只戴耳机的橘猫" --timeout-ms 180000 --json
+
+# 源码模式:
+# node scripts/run-cli.mjs diagnostic browser-info --json
+# node scripts/run-cli.mjs conversation send-message --message "你好" --json
+# node scripts/run-cli.mjs image generate-image --prompt "一只戴耳机的橘猫" --timeout-ms 180000 --json
 ```
 
 ## 安装与前置条件

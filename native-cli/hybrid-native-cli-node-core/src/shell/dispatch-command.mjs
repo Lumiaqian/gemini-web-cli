@@ -219,11 +219,20 @@ function emitJsonFailure(stdioRuntime, startedAt, runtimeLike, commandId, catego
   return envelope.exitCode;
 }
 
+function detectCliName() {
+  const binPath = process.argv[1];
+  if (!binPath) return 'gemini-web-cli';
+  const base = binPath.split('/').pop();
+  if (base === 'run-cli.mjs' || base === 'run-cli') return 'node scripts/run-cli.mjs';
+  return base;
+}
+
 function buildRootHelpLines() {
+  const cliName = detectCliName();
   const lines = [
-    'Usage: node scripts/run-cli.mjs <group> <command> [command args] [global flags]',
-    '       node scripts/run-cli.mjs <command-id> [command args] [global flags]',
-    '       node scripts/run-cli.mjs describe-scaffold [--json]',
+    `Usage: ${cliName} <group> <command> [command args] [global flags]`,
+    `       ${cliName} <command-id> [command args] [global flags]`,
+    `       ${cliName} describe-scaffold [--json]`,
     '',
     `Route: ${COMMAND_TREE.routeId} (daemon strategy: ${COMMAND_TREE.daemonStrategy})`,
     '',
