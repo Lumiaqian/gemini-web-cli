@@ -21,7 +21,7 @@ The selected route is `hybrid-native-cli-node-core`. The CLI handles the command
 **Install via npm (recommended)**
 
 ```bash
-npm install -g gemini-web-cli
+npm install -g @lumiaqian/gemini-web-cli
 ```
 
 After installation, the `gemini-web-cli` command is available globally.
