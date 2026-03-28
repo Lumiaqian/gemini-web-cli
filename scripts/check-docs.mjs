@@ -241,11 +241,12 @@ function validateReferencedScripts(docsText, manifest, errors) {
 
 function validateReferencedPackages(docsText, manifest, errors) {
   const declaredPackages = new Set([
+    manifest?.name,
     ...Object.keys(manifest?.dependencies ?? {}),
     ...Object.keys(manifest?.devDependencies ?? {}),
     ...Object.keys(manifest?.optionalDependencies ?? {}),
     ...Object.keys(manifest?.peerDependencies ?? {}),
-  ]);
+  ].filter(Boolean));
 
   for (const packageName of extractReferencedPackages(docsText)) {
     if (!declaredPackages.has(packageName)) {
