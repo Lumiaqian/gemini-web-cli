@@ -28,6 +28,34 @@ const ALPHA_CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 小时
 const alphaMapCache = {};
 
 /**
+ * 从背景参考图计算 Alpha Map
+ *
+ * bg_48.png / bg_96.png 是纯水印参考图（白色水印在纯黑背景上）。
+ * 由于背景为黑 (original=0)，水印公式退化为：watermarked = α × 255
+ * 所以 α = pixel / 255
+ *
+ * @param {Buffer} bgBuffer - PNG 原始字节
+ * @param {number} size - 水印尺寸（48 或 96）
+ * @returns {Promise<Float32Array>} - size×size 的 Float32Array，每像素一个 [0,1] alpha 值
+ */
+async function calculateAlphaMap(bgBuffer, size) {
+  const { data, info } = await sharp(bgBuffer)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  // bg 图应该是 size × size 的灰度图（3 通道 RGB 或 1 通道灰度）
+  // 水印为白色（255），背景为黑（0），取 R 通道即可（灰度下 R=G=B）
+  const alphaMap = new Float32Array(size * size);
+  for (let i = 0; i < size * size; i++) {
+    // info.channels === 1 表示灰度图，直接用 data[i]
+    // 否则取 R 通道 data[i * channels]
+    const pixelValue = info.channels === 1 ? data[i] : data[i * info.channels];
+    alphaMap[i] = pixelValue / 255;
+  }
+  return alphaMap;
+}
+
+/**
  * 清理过期的缓存条目
  */
 function cleanExpiredCache() {
