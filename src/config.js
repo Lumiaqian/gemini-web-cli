@@ -23,7 +23,8 @@
  *   - 优先级最低，用于作为用户级永久默认配置
  *   - 使用 toml 库解析（已在 dependencies 中声明）
  */
-import { resolve, homedir, join, dirname } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import toml from 'toml';
