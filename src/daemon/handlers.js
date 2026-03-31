@@ -9,6 +9,16 @@
  */
 import { ensureBrowserForDaemon, getBrowser, terminateBrowser } from './engine.js';
 import { resetHeartbeat, getLifecycleInfo } from './lifecycle.js';
+import { appendFileSync } from 'node:fs';
+import config from '../config.js';
+
+const ERROR_LOG = config.daemonErrorLog;
+
+function writeErrorLog(msg) {
+  if (!ERROR_LOG) return;
+  const timestamp = new Date().toISOString();
+  appendFileSync(ERROR_LOG, `[${timestamp}] ${msg}\n`);
+}
 
 /**
  * GET /browser/acquire
@@ -31,7 +41,9 @@ export async function handleAcquire(_req, res) {
       lifecycle: getLifecycleInfo(),
     });
   } catch (err) {
-    console.error(`[handler] /browser/acquire 失败: ${err.message}`);
+    const msg = `[handler] /browser/acquire 失败: ${err.message}`;
+    console.error(msg);
+    writeErrorLog(msg);
     sendJSON(res, 500, {
       ok: false,
       error: 'acquire_failed',
@@ -101,7 +113,9 @@ export async function handleRelease(_req, res) {
     await terminateBrowser();
     sendJSON(res, 200, { ok: true, message: 'browser_terminated', pid });
   } catch (err) {
-    console.error(`[handler] /browser/release 失败: ${err.message}`);
+    const msg = `[handler] /browser/release 失败: ${err.message}`;
+    console.error(msg);
+    writeErrorLog(msg);
     sendJSON(res, 500, {
       ok: false,
       error: 'release_failed',

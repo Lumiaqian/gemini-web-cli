@@ -14,6 +14,7 @@
  *   GET  /health           — Daemon 健康检查
  */
 import { createServer } from 'node:http';
+import { appendFileSync } from 'node:fs';
 import { handleAcquire, handleStatus, handleRelease, handleHealth } from './handlers.js';
 import { setTTL, cancelHeartbeat, setServer } from './lifecycle.js';
 import { terminateBrowser, onBrowserExit } from './engine.js';
@@ -22,8 +23,16 @@ import config from '../config.js';
 // ── 配置（统一从 config.js 读取） ──
 const PORT = config.daemonPort;
 const TTL_MS = config.daemonTTL;
+const ERROR_LOG = config.daemonErrorLog;
 
 setTTL(TTL_MS);
+
+// ── 错误日志（可选文件持久化） ──
+function writeErrorLog(msg) {
+  if (!ERROR_LOG) return;
+  const timestamp = new Date().toISOString();
+  appendFileSync(ERROR_LOG, `[${timestamp}] ${msg}\n`);
+}
 
 // ── 路由表 ──
 const routes = {
@@ -94,9 +103,13 @@ SIGNALS.forEach(sig => {
 
 // ── 未捕获异常兜底 ──
 process.on('uncaughtException', (err) => {
-  console.error('[daemon] ❌ 未捕获异常:', err.message);
+  const msg = `[daemon] ❌ 未捕获异常: ${err.message}`;
+  console.error(msg);
+  writeErrorLog(msg);
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[daemon] ❌ 未处理的 Promise 拒绝:', reason);
+  const msg = `[daemon] ❌ 未处理的 Promise 拒绝: ${reason}`;
+  console.error(msg);
+  writeErrorLog(msg);
 });

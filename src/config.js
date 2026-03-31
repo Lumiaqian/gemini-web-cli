@@ -134,6 +134,13 @@ const config = {
 
   /** Daemon 闲置超时时间（ms），超时后自动终止浏览器释放资源 */
   daemonTTL: envInt('DAEMON_TTL_MS', 30 * 60 * 1000),
+
+  /**
+   * 错误日志文件路径（不设则不写文件日志）
+   * 设置后所有 console.error 和未捕获异常/拒绝会同时写入该文件
+   * 示例：DAEMON_ERROR_LOG=/tmp/gemini-daemon-error.log
+   */
+  daemonErrorLog: envStr('DAEMON_ERROR_LOG', ''),
 };
 
 export default config;
