@@ -1,16 +1,7 @@
-/**
- * postinstall.mjs — 用户级配置初始化
- *
- * 在 npm install -g 后自动运行，创建 ~/.gemini-web-cli/config.toml
- *（如果不存在）。用户可以在这个文件里覆盖所有配置项。
- *
- * 优先级（从高到低）：
- *   1. 环境变量（process.env）
- *   2. .env.development / .env（项目目录，git-ignored）
- *   3. ~/.gemini-web-cli/config.toml（用户级默认，永久保留）
- */
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir, join } from 'node:path';
+
+import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 const CONFIG_DIR = join(homedir(), '.gemini-web-cli');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.toml');
