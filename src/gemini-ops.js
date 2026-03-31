@@ -405,13 +405,56 @@ export function createOps(page) {
      * @returns {Promise<{answering: boolean, status: 'idle'|'answering', detail: object}>}
      */
     async getAnswerState() {
-      const detail = await this.getActionBtnStatus();
+      const detail = await this.getStatus();
       const answering = detail.status === 'stop';
       return {
         answering,
         status: answering ? 'answering' : 'idle',
         detail,
       };
+    },
+
+    async waitForSendReady(opts = {}) {
+      const { timeout = 15_000, interval = 300 } = opts;
+      const start = Date.now();
+      let lastStatus = null;
+
+      while (Date.now() - start < timeout) {
+        const status = await this.getStatus();
+        lastStatus = status;
+
+        if (status.status === 'submit') {
+          return { ok: true, elapsed: Date.now() - start, status };
+        }
+
+        if (status.status === 'unknown') {
+          await sleep(interval);
+          continue;
+        }
+
+        await sleep(interval);
+      }
+
+      return { ok: false, error: 'send_not_ready', elapsed: Date.now() - start, finalStatus: lastStatus };
+    },
+
+    async waitForIdle(opts = {}) {
+      const { timeout = 15_000, interval = 300 } = opts;
+      const start = Date.now();
+      let lastStatus = null;
+
+      while (Date.now() - start < timeout) {
+        const status = await this.getStatus();
+        lastStatus = status;
+
+        if (status.status === 'mic' || status.status === 'submit') {
+          return { ok: true, elapsed: Date.now() - start, status };
+        }
+
+        await sleep(interval);
+      }
+
+      return { ok: false, error: 'page_busy', elapsed: Date.now() - start, finalStatus: lastStatus };
     },
 
     /**
@@ -1056,6 +1099,11 @@ export function createOps(page) {
     async sendAndWait(prompt, opts = {}) {
       const { timeout = 120_000, interval = 1_000, onPoll } = opts;
 
+      const beforeFillReady = await this.waitForIdle({ timeout: 15_000, interval: 300 });
+      if (!beforeFillReady.ok) {
+        return { ok: false, error: beforeFillReady.error, detail: beforeFillReady, elapsed: 0 };
+      }
+
       // 1. 填写
       const fillResult = await this.fillPrompt(prompt);
       if (!fillResult.ok) {
@@ -1064,6 +1112,11 @@ export function createOps(page) {
 
       // 短暂等待 UI 响应
       await sleep(300);
+
+      const beforeClickReady = await this.waitForSendReady({ timeout: 5_000, interval: 200 });
+      if (!beforeClickReady.ok) {
+        return { ok: false, error: beforeClickReady.error, detail: beforeClickReady, elapsed: 0 };
+      }
 
       // 2. 点击发送
       const clickResult = await this.click('sendBtn');
@@ -1224,5 +1277,3 @@ function isLoggedIn(op) {
     return { ok: true, loggedIn: !notLoggedIn, barText: text };
   });
 }
-
-

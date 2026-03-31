@@ -21,6 +21,7 @@ import config from './config.js';
 import { sleep } from './util.js';
 import { DaemonStartupError, DaemonConnectionError } from './errors.js';
 import puppeteer from './puppeteer-singleton.js';
+import { createOps } from './gemini-ops.js';
 
 // ── 路径常量 ──
 const __filename = fileURLToPath(import.meta.url);
@@ -109,24 +110,34 @@ async function ensureDaemon() {
  */
 async function findOrCreateGeminiPage(browser) {
   const pages = await browser.pages();
+  const geminiPages = [];
 
-  // 优先复用已有的 Gemini 标签页
   for (const page of pages) {
     const url = page.url();
     if (url.includes('gemini.google.com')) {
-      console.log('[browser] 命中已有 Gemini 标签页');
-      await page.bringToFront();
-      return page;
+      geminiPages.push(page);
     }
   }
 
-  // 没找到，新开一个
-  const page = pages.length > 0 ? pages[0] : await browser.newPage();
+  for (const page of geminiPages) {
+    try {
+      const status = await createOps(page).getStatus();
+      if (status.status === 'mic' || status.status === 'submit') {
+        console.log('[browser] 命中空闲 Gemini 标签页');
+        await page.bringToFront();
+        return page;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const page = await browser.newPage();
   await page.goto('https://gemini.google.com/app', {
     waitUntil: 'networkidle2',
     timeout: 30_000,
   });
-  console.log('[browser] 已打开新的 Gemini 标签页');
+  console.log(geminiPages.length > 0 ? '[browser] 已打开新的 Gemini 标签页（跳过忙碌页）' : '[browser] 已打开新的 Gemini 标签页');
   return page;
 }
 
