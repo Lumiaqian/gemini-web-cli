@@ -8,6 +8,7 @@ import { ROUTE_ID, SCAFFOLD_VERSION } from '../route-metadata.mjs';
 import { buildExitCodeError, getExitCodeEntry } from '../runtime/exit-codes.mjs';
 import { CliRuntimeConfigError, loadCliRuntimeConfig, toPublicRuntimeSnapshot } from '../runtime/load-cli-config.mjs';
 import { CliRuntimeFailure, createStdioRuntime } from '../runtime/stdio-runtime.mjs';
+import { createImageTaskStore } from '../runtime/image-task-store.mjs';
 import { createBrowserLifecycleAdapter } from '../lifecycle/browser-lifecycle.mjs';
 import { executeSessionTextDiagnosticCommand } from '../handlers/session-text-diagnostic-handlers.mjs';
 import { executeImageMediaCommand } from '../handlers/image-media-handlers.mjs';
@@ -20,6 +21,7 @@ const IO_DEFAULTS = Object.freeze({
 
 const DEFAULT_DEPENDENCIES = Object.freeze({
   browserLifecycle: createBrowserLifecycleAdapter(),
+  imageTaskStore: createImageTaskStore(),
 });
 
 function generateRequestId(startedAt) {
@@ -344,6 +346,9 @@ function summarizeHumanResult(command, result) {
     case 'reload-page':
     case 'navigate-to':
     case 'generate-image':
+    case 'start-image-task':
+    case 'get-image-task':
+    case 'collect-image-task':
     case 'extract-image':
     case 'download-full-size-image':
       return result.message ?? 'ok';
@@ -442,6 +447,7 @@ async function executeCommand(command, passthroughArgs, runtime, stdioRuntime, d
     passthroughArgs,
     runtime,
     browserLifecycle: dependencies.browserLifecycle,
+    imageTaskStore: dependencies.imageTaskStore,
   });
   if (imageMediaResult !== null) {
     return imageMediaResult;

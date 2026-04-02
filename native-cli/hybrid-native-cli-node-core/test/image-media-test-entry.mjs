@@ -7,6 +7,7 @@ import path from 'node:path';
 import { Writable } from 'node:stream';
 import { dispatchHybridNativeCliCommand } from '../src/shell/dispatch-command.mjs';
 import { getExitCodeForCategory } from '../src/runtime/exit-codes.mjs';
+import { createImageTaskStore } from '../src/runtime/image-task-store.mjs';
 
 const ONE_BY_ONE_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlH0i8AAAAASUVORK5CYII=';
 const ONE_BY_ONE_PNG_DATA_URL = `data:image/png;base64,${ONE_BY_ONE_PNG_BASE64}`;
@@ -58,6 +59,7 @@ function writeTempPng(directory, name) {
 function createHappyPathDependencies(tempDir) {
   const calls = [];
   const downloadPath = writeTempPng(tempDir, 'full-size-download.png');
+  const imageTaskStore = createImageTaskStore({ storeFile: path.join(tempDir, 'image-tasks.json') });
 
   const ops = {
     async checkLogin() {
@@ -76,26 +78,25 @@ function createHappyPathDependencies(tempDir) {
       calls.push(`upload:${path.basename(filePath)}`);
       return { ok: true, elapsed: 25 };
     },
-    async generateImage(prompt, { fullSize, timeout }) {
-      calls.push(`generate:${prompt}:${fullSize}:${timeout}`);
-      if (fullSize) {
-        return {
-          ok: true,
-          method: 'fullSize',
-          elapsed: 222,
-          filePath: downloadPath,
-          suggestedFilename: path.basename(downloadPath),
-          src: 'https://example.test/full-size.png',
-          index: 1,
-          total: 2,
-        };
-      }
-
+    async sendAndWait(prompt, { timeout }) {
+      calls.push(`send:${prompt}:${timeout}`);
       return {
         ok: true,
-        method: 'canvas',
         elapsed: 111,
-        dataUrl: ONE_BY_ONE_PNG_DATA_URL,
+        finalStatus: { status: 'mic' },
+        text: 'done',
+        textIndex: 0,
+      };
+    },
+    async getLatestImage() {
+      calls.push('get-latest-image');
+      return {
+        ok: true,
+        src: 'blob:second',
+        alt: 'generated image',
+        width: 1024,
+        height: 1024,
+        isNew: true,
       };
     },
     async getAllImages() {
@@ -136,6 +137,11 @@ function createHappyPathDependencies(tempDir) {
       calls.push(`acquire:${runtime.commandId}`);
       return {
         ops,
+        page: {
+          url() {
+            return 'https://gemini.google.com/app/test-session';
+          },
+        },
         reused: false,
         staleSessionReplaced: false,
         daemonStrategy: 'keep',
@@ -151,11 +157,13 @@ function createHappyPathDependencies(tempDir) {
     },
   };
 
-  return { dependencies: { browserLifecycle }, calls, downloadPath };
+  return { dependencies: { browserLifecycle, imageTaskStore }, calls, downloadPath };
 }
 
 function createFailureDependencies(mode) {
   const calls = [];
+  const tempDir = createTempDir(`image-media-failure-${mode}-`);
+  const imageTaskStore = createImageTaskStore({ storeFile: path.join(tempDir, 'image-tasks.json') });
 
   const ops = {
     async checkLogin() {
@@ -190,8 +198,8 @@ function createFailureDependencies(mode) {
       }
       return { ok: true, filePath: '/tmp/unused.png', index: index ?? 0, total: 1 };
     },
-    async generateImage(prompt, { fullSize, timeout }) {
-      calls.push(`generate:${prompt}:${fullSize}:${timeout}`);
+    async sendAndWait(prompt, { timeout }) {
+      calls.push(`send:${prompt}:${timeout}`);
       if (mode === 'generate-timeout') {
         return {
           ok: false,
@@ -203,10 +211,19 @@ function createFailureDependencies(mode) {
 
       return {
         ok: true,
-        method: fullSize ? 'fullSize' : 'canvas',
         elapsed: 12,
-        dataUrl: ONE_BY_ONE_PNG_DATA_URL,
-        filePath: '/tmp/unused.png',
+        finalStatus: { status: 'mic' },
+      };
+    },
+    async getLatestImage() {
+      calls.push('get-latest-image');
+      return {
+        ok: true,
+        src: 'blob:broken',
+        alt: 'broken',
+        width: 512,
+        height: 512,
+        isNew: true,
       };
     },
   };
@@ -216,6 +233,11 @@ function createFailureDependencies(mode) {
       calls.push(`acquire:${runtime.commandId}`);
       return {
         ops,
+        page: {
+          url() {
+            return 'https://gemini.google.com/app/test-session';
+          },
+        },
         reused: false,
         staleSessionReplaced: false,
         daemonStrategy: 'keep',
@@ -226,7 +248,7 @@ function createFailureDependencies(mode) {
     },
   };
 
-  return { dependencies: { browserLifecycle }, calls };
+  return { dependencies: { browserLifecycle, imageTaskStore }, calls, cleanup() { rmSync(tempDir, { recursive: true, force: true }); } };
 }
 
 async function verifyHappyPathCoverage() {
@@ -304,8 +326,8 @@ async function verifyHappyPathCoverage() {
 
     assert.match(calls.join('\n'), /upload:upload-one\.png/);
     assert.match(calls.join('\n'), /upload:reference-one\.png/);
-    assert.match(calls.join('\n'), /generate:A bright sunrise over mountains:false:190000/);
-    assert.match(calls.join('\n'), /generate:A cinematic storm cloud:true:/);
+    assert.match(calls.join('\n'), /send:A bright sunrise over mountains:190000/);
+    assert.match(calls.join('\n'), /send:A cinematic storm cloud:180000/);
     assert.match(calls.join('\n'), /download:1/);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -335,9 +357,9 @@ async function verifyMissingFileFailure() {
 
 async function verifyUploadFailureCoverage() {
   const tempDir = createTempDir('image-media-upload-fail-');
+  const { dependencies, calls, cleanup } = createFailureDependencies('upload-failure');
   try {
     const imagePath = writeTempPng(tempDir, 'broken-upload.png');
-    const { dependencies, calls } = createFailureDependencies('upload-failure');
     const result = await runJsonCommand([
       'upload-images',
       '--json',
@@ -350,29 +372,34 @@ async function verifyUploadFailureCoverage() {
     assert.equal(result.envelope.error.details.reason, 'upload_image_failed');
     assert.deepEqual(calls, ['acquire:upload-images', 'upload:broken-upload.png', 'disconnect:upload-images']);
   } finally {
+    cleanup();
     rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
 async function verifyIndexOutOfRangeCoverage() {
-  const { dependencies, calls } = createFailureDependencies('index-out-of-range');
-  const result = await runJsonCommand([
-    'download-full-size-image',
-    '--json',
-    '--index', '9',
-  ], dependencies);
+  const { dependencies, calls, cleanup } = createFailureDependencies('index-out-of-range');
+  try {
+    const result = await runJsonCommand([
+      'download-full-size-image',
+      '--json',
+      '--index', '9',
+    ], dependencies);
 
-  assert.equal(result.exitCode, getExitCodeForCategory('invalid-args'));
-  assert.equal(result.envelope.error.category, 'invalid-args');
-  assert.equal(result.envelope.error.details.reason, 'index-out-of-range');
-  assert.equal(result.envelope.error.details.requestedIndex, 9);
-  assert.deepEqual(calls, ['acquire:download-full-size-image', 'download:9', 'disconnect:download-full-size-image']);
+    assert.equal(result.exitCode, getExitCodeForCategory('invalid-args'));
+    assert.equal(result.envelope.error.category, 'invalid-args');
+    assert.equal(result.envelope.error.details.reason, 'index-out-of-range');
+    assert.equal(result.envelope.error.details.requestedIndex, 9);
+    assert.deepEqual(calls, ['acquire:download-full-size-image', 'download:9', 'disconnect:download-full-size-image']);
+  } finally {
+    cleanup();
+  }
 }
 
 async function verifyExtractionFailureCoverage() {
   const tempDir = createTempDir('image-media-extract-fail-');
   try {
-    const { dependencies, calls } = createFailureDependencies('extract-failure');
+    const { dependencies, calls, cleanup } = createFailureDependencies('extract-failure');
     const result = await runJsonCommand([
       'extract-image',
       '--json',
@@ -384,45 +411,107 @@ async function verifyExtractionFailureCoverage() {
     assert.equal(result.envelope.error.category, 'internal-error');
     assert.equal(result.envelope.error.details.reason, 'extract-image-failed');
     assert.deepEqual(calls, ['acquire:extract-image', 'extract:blob:broken', 'disconnect:extract-image']);
+    cleanup();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
 async function verifyGenerateTimeoutCoverage() {
-  const { dependencies, calls } = createFailureDependencies('generate-timeout');
-  const result = await runJsonCommand([
-    'generate-image',
-    '--json',
-    '--prompt', 'timeout-case',
-    '--timeout', '9000',
-  ], dependencies);
+  const { dependencies, calls, cleanup } = createFailureDependencies('generate-timeout');
+  try {
+    const result = await runJsonCommand([
+      'generate-image',
+      '--json',
+      '--prompt', 'timeout-case',
+      '--timeout', '9000',
+    ], dependencies);
 
-  assert.equal(result.exitCode, getExitCodeForCategory('timeout'));
-  assert.equal(result.envelope.error.category, 'timeout');
-  assert.equal(result.envelope.error.details.reason, 'generate-image-timeout');
-  assert.equal(result.envelope.error.details.elapsedMs, 9000);
-  assert.deepEqual(calls, [
-    'acquire:generate-image',
-    'check-login',
-    'ensure-model-pro',
-    'generate:timeout-case:false:9000',
-    'disconnect:generate-image',
-  ]);
+    assert.equal(result.exitCode, getExitCodeForCategory('timeout'));
+    assert.equal(result.envelope.error.category, 'timeout');
+    assert.equal(result.envelope.error.details.reason, 'generate-image-timeout');
+    assert.equal(result.envelope.error.details.elapsedMs, 9000);
+    assert.deepEqual(calls, [
+      'acquire:generate-image',
+      'check-login',
+      'ensure-model-pro',
+      'send:timeout-case:9000',
+      'disconnect:generate-image',
+    ]);
+  } finally {
+    cleanup();
+  }
 }
 
 async function verifyDownloadFailureCoverage() {
-  const { dependencies, calls } = createFailureDependencies('download-missing');
-  const result = await runJsonCommand([
-    'download-full-size-image',
-    '--json',
-    '--index', '0',
-  ], dependencies);
+  const { dependencies, calls, cleanup } = createFailureDependencies('download-missing');
+  try {
+    const result = await runJsonCommand([
+      'download-full-size-image',
+      '--json',
+      '--index', '0',
+    ], dependencies);
 
-  assert.equal(result.exitCode, getExitCodeForCategory('internal-error'));
-  assert.equal(result.envelope.error.category, 'internal-error');
-  assert.equal(result.envelope.error.details.reason, 'download-full-size-image-failed');
-  assert.deepEqual(calls, ['acquire:download-full-size-image', 'download:0', 'disconnect:download-full-size-image']);
+    assert.equal(result.exitCode, getExitCodeForCategory('internal-error'));
+    assert.equal(result.envelope.error.category, 'internal-error');
+    assert.equal(result.envelope.error.details.reason, 'download-full-size-image-failed');
+    assert.deepEqual(calls, ['acquire:download-full-size-image', 'download:0', 'disconnect:download-full-size-image']);
+  } finally {
+    cleanup();
+  }
+}
+
+async function verifyTaskProtocolCoverage() {
+  const tempDir = createTempDir('image-media-task-');
+  try {
+    const { dependencies, calls, downloadPath } = createHappyPathDependencies(tempDir);
+
+    const started = await runJsonCommand([
+      'start-image-task',
+      '--json',
+      '--output-dir', tempDir,
+      '--prompt', 'Task protocol image',
+    ], dependencies);
+    assert.equal(started.exitCode, 0);
+    assert.equal(started.envelope.result.task.state, 'image_visible');
+    const taskId = started.envelope.result.task.taskId;
+    assert.ok(taskId);
+
+    const fetched = await runJsonCommand([
+      'get-image-task',
+      '--json',
+      '--task-id', taskId,
+    ], dependencies);
+    assert.equal(fetched.exitCode, 0);
+    assert.equal(fetched.envelope.result.task.taskId, taskId);
+    assert.equal(fetched.envelope.result.task.state, 'image_visible');
+
+    const collected = await runJsonCommand([
+      'collect-image-task',
+      '--json',
+      '--output-dir', tempDir,
+      '--task-id', taskId,
+    ], dependencies);
+    assert.equal(collected.exitCode, 0);
+    assert.equal(collected.envelope.result.task.state, 'completed');
+    assert.ok(existsSync(collected.envelope.result.task.output.filePath));
+
+    const reused = await runJsonCommand([
+      'start-image-task',
+      '--json',
+      '--output-dir', tempDir,
+      '--prompt', 'Task protocol image',
+    ], dependencies);
+    assert.equal(reused.exitCode, 0);
+    assert.equal(reused.envelope.result.reused, true);
+    assert.equal(reused.envelope.result.task.taskId, taskId);
+
+    assert.ok(downloadPath);
+    assert.match(calls.join('\n'), /send:Task protocol image:180000/);
+    assert.match(calls.join('\n'), /extract:blob:second/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function main() {
@@ -433,6 +522,7 @@ async function main() {
   await verifyExtractionFailureCoverage();
   await verifyGenerateTimeoutCoverage();
   await verifyDownloadFailureCoverage();
+  await verifyTaskProtocolCoverage();
   process.stdout.write('OK image-media-test-entry\n');
 }
 

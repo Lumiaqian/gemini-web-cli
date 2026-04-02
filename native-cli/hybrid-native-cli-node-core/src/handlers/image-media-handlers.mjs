@@ -4,8 +4,12 @@ import legacyConfig from '../../../../src/config.js';
 import { ROUTE_ID, SCAFFOLD_VERSION } from '../route-metadata.mjs';
 import { toPublicRuntimeSnapshot } from '../runtime/load-cli-config.mjs';
 import { CliRuntimeFailure } from '../runtime/stdio-runtime.mjs';
+import { buildImageTaskKey } from '../runtime/image-task-store.mjs';
 
 const HANDLED_COMMAND_IDS = new Set([
+  'start-image-task',
+  'get-image-task',
+  'collect-image-task',
   'generate-image',
   'upload-images',
   'get-images',
@@ -41,6 +45,13 @@ function buildSessionMetadata(session) {
 function buildSessionResult(commandId, session, payload = {}) {
   return buildBaseResult(commandId, {
     session: buildSessionMetadata(session),
+    ...payload,
+  });
+}
+
+function buildImageTaskResult(commandId, task, payload = {}) {
+  return buildBaseResult(commandId, {
+    task,
     ...payload,
   });
 }
@@ -195,7 +206,7 @@ function parseNoArgCommand(tokens) {
 
 function parseGenerateImageArgs(tokens) {
   const { values, multiValues, booleans, positionals } = collectCommandArgs(tokens, {
-    valueFlags: new Set(['--prompt', '--timeout']),
+    valueFlags: new Set(['--prompt', '--timeout', '--idempotency-key']),
     booleanFlags: new Set(['--new-session', '--full-size']),
     multiValueFlags: new Set(['--reference-images']),
   });
@@ -215,7 +226,28 @@ function parseGenerateImageArgs(tokens) {
     fullSize: booleans.get('--full-size') ?? false,
     timeoutMs: values.has('--timeout') ? parseIntegerFlag('--timeout', values.get('--timeout'), { allowZero: false }) : null,
     referenceImages: multiValues.get('--reference-images') ?? [],
+    idempotencyKey: values.get('--idempotency-key') ?? null,
   });
+}
+
+function parseTaskIdArgs(tokens) {
+  const { values, positionals } = collectCommandArgs(tokens, {
+    valueFlags: new Set(['--task-id']),
+  });
+
+  if (values.has('--task-id') && positionals.length > 0) {
+    throw new Error('task id must be provided either as --task-id <value> or as one positional argument');
+  }
+
+  const taskId = values.get('--task-id') ?? (positionals.length === 1 ? positionals[0] : null);
+  if (!hasText(taskId)) {
+    throw new Error('missing required argument: --task-id <value>');
+  }
+  if (positionals.length > 1) {
+    throw new Error(`unexpected arguments: ${positionals.slice(1).join(' ')}`);
+  }
+
+  return Object.freeze({ taskId });
 }
 
 function parseUploadImagesArgs(tokens) {
@@ -272,8 +304,12 @@ function parseDownloadImageArgs(tokens) {
 
 function parseCommandArgs(commandId, passthroughArgs) {
   switch (commandId) {
+    case 'start-image-task':
     case 'generate-image':
       return parseGenerateImageArgs(passthroughArgs);
+    case 'get-image-task':
+    case 'collect-image-task':
+      return parseTaskIdArgs(passthroughArgs);
     case 'upload-images':
       return parseUploadImagesArgs(passthroughArgs);
     case 'get-images':
@@ -402,6 +438,292 @@ async function withGeminiSession(runtime, browserLifecycle, action) {
   } finally {
     await browserLifecycle.disconnectSession(runtime);
   }
+}
+
+function throwTaskNotFound(runtime, commandId, taskId) {
+  throwCommandFailure({
+    runtime,
+    commandId,
+    category: 'invalid-args',
+    message: `Unknown image task id: ${taskId}`,
+    reason: 'image-task-not-found',
+    details: { taskId },
+  });
+}
+
+function toTaskSessionContext(session) {
+  return {
+    pageUrl: typeof session?.page?.url === 'function' ? session.page.url() : null,
+    daemonStrategy: session?.daemonStrategy ?? 'keep',
+  };
+}
+
+function buildTaskIdempotencyKey(parsedArgs) {
+  return parsedArgs.idempotencyKey ?? buildImageTaskKey({
+    prompt: parsedArgs.prompt,
+    fullSize: Boolean(parsedArgs.fullSize),
+    newSession: Boolean(parsedArgs.newSession),
+    referenceImages: Array.isArray(parsedArgs.referenceImages) ? [...parsedArgs.referenceImages].map((v) => path.resolve(path.normalize(v))).sort() : [],
+  });
+}
+
+async function ensureImageTaskPrerequisites(runtime, commandId, session, parsedArgs, referenceImages) {
+  const loginCheck = await session.ops.checkLogin();
+  if (!loginCheck?.ok) {
+    throwSelectorFailure(runtime, commandId, 'Unable to determine Gemini login state before image generation.', 'check-login-failed', {
+      legacyResult: loginCheck,
+    });
+  }
+  if (!loginCheck.loggedIn) {
+    throwCommandFailure({
+      runtime,
+      commandId,
+      category: 'auth-failure',
+      message: 'Gemini is not logged in. Complete Google sign-in before generating images.',
+      reason: 'not-logged-in',
+      details: { loginCheck },
+    });
+  }
+
+  if (parsedArgs.newSession) {
+    const newChatResult = await session.ops.click('newChatBtn');
+    if (!newChatResult?.ok) {
+      throwSelectorFailure(runtime, commandId, 'Unable to start a new Gemini chat before image generation.', 'new-chat-click-failed', {
+        legacyResult: newChatResult,
+      });
+    }
+  }
+
+  const ensureModelResult = await session.ops.ensureModelPro();
+  if (!ensureModelResult?.ok) {
+    throwSelectorFailure(runtime, commandId, 'Unable to switch Gemini to the Pro model required for image generation.', ensureModelResult.error ?? 'ensure-model-pro-failed', {
+      legacyResult: ensureModelResult,
+    });
+  }
+
+  const uploadedReferenceImages = [];
+  for (const referenceImage of referenceImages) {
+    const uploadResult = await session.ops.uploadImage(referenceImage.normalizedPath);
+    if (!uploadResult?.ok) {
+      mapUploadFailure(runtime, commandId, uploadResult, {
+        stage: 'reference-image-upload',
+        inputPath: referenceImage.inputPath,
+        normalizedPath: referenceImage.normalizedPath,
+        uploadedCount: uploadedReferenceImages.length,
+        requestedCount: referenceImages.length,
+      });
+    }
+
+    uploadedReferenceImages.push({
+      inputPath: referenceImage.inputPath,
+      normalizedPath: referenceImage.normalizedPath,
+      elapsedMs: uploadResult.elapsed ?? null,
+      warning: uploadResult.warning ?? null,
+    });
+  }
+
+  return uploadedReferenceImages;
+}
+
+async function runImageTaskStart(runtime, browserLifecycle, imageTaskStore, commandId, parsedArgs) {
+  const timeoutMs = resolveCommandTimeout(runtime, parsedArgs.timeoutMs, 180_000);
+  const referenceImages = validateLocalImagePaths(runtime, commandId, parsedArgs.referenceImages, {
+    argument: 'referenceImages',
+  });
+  const idempotencyKey = buildTaskIdempotencyKey(parsedArgs);
+  const existingTask = imageTaskStore.findReusableTaskByKey(idempotencyKey);
+  if (existingTask) {
+    return buildImageTaskResult(commandId, imageTaskStore.toPublicTask(existingTask), {
+      reused: true,
+      message: `Reused existing image task ${existingTask.taskId} in state ${existingTask.state}.`,
+    });
+  }
+
+  return withGeminiSession(runtime, browserLifecycle, async (session) => {
+    const task = imageTaskStore.createTask({
+      idempotencyKey,
+      prompt: parsedArgs.prompt,
+      fullSize: parsedArgs.fullSize,
+      newSession: parsedArgs.newSession,
+      timeoutMs,
+      referenceImages: referenceImages.map((item) => item.normalizedPath),
+      session: toTaskSessionContext(session),
+    });
+
+    imageTaskStore.updateTask(task.taskId, (draft) => ({
+      ...draft,
+      state: 'generating',
+      session: toTaskSessionContext(session),
+    }));
+
+    try {
+      const uploadedReferenceImages = await ensureImageTaskPrerequisites(runtime, commandId, session, parsedArgs, referenceImages);
+      imageTaskStore.updateTask(task.taskId, (draft) => ({
+        ...draft,
+        referenceImages: uploadedReferenceImages,
+        session: toTaskSessionContext(session),
+      }));
+
+      const sendResult = await session.ops.sendAndWait(parsedArgs.prompt, { timeout: timeoutMs });
+      if (!sendResult?.ok) {
+        mapGenerateFailure(runtime, commandId, sendResult);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      let imgInfo = await session.ops.getLatestImage();
+      if (!imgInfo?.ok) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        imgInfo = await session.ops.getLatestImage();
+      }
+      if (!imgInfo?.ok) {
+        throwSelectorFailure(runtime, commandId, 'Gemini did not render an image to persist for this task.', 'no-image-found', {
+          legacyResult: imgInfo,
+        });
+      }
+
+      const updatedTask = imageTaskStore.updateTask(task.taskId, (draft) => ({
+        ...draft,
+        state: 'image_visible',
+        session: toTaskSessionContext(session),
+        image: {
+          src: imgInfo.src ?? null,
+          alt: imgInfo.alt ?? null,
+          width: imgInfo.width ?? null,
+          height: imgInfo.height ?? null,
+          isNew: imgInfo.isNew ?? null,
+          methodHint: parsedArgs.fullSize ? 'fullSize' : 'preview',
+        },
+        error: null,
+      }));
+
+      return buildImageTaskResult(commandId, imageTaskStore.toPublicTask(updatedTask), {
+        reused: false,
+        message: `Started image task ${task.taskId}; Gemini image is now visible and ready for collection.`,
+      });
+    } catch (error) {
+      const failure = error instanceof CliRuntimeFailure
+        ? {
+            category: error.category,
+            message: error.message,
+            details: error.details ?? null,
+          }
+        : {
+            category: 'internal-error',
+            message: error instanceof Error ? error.message : String(error),
+            details: null,
+          };
+
+      imageTaskStore.markFailed(task.taskId, failure);
+      throw error;
+    }
+  });
+}
+
+async function executeStartImageTask(runtime, browserLifecycle, imageTaskStore, commandId, parsedArgs) {
+  return runImageTaskStart(runtime, browserLifecycle, imageTaskStore, commandId, parsedArgs);
+}
+
+async function executeGetImageTask(runtime, imageTaskStore, commandId, parsedArgs) {
+  const task = imageTaskStore.getTask(parsedArgs.taskId);
+  if (!task) {
+    throwTaskNotFound(runtime, commandId, parsedArgs.taskId);
+  }
+  return buildImageTaskResult(commandId, imageTaskStore.toPublicTask(task), {
+    message: `Loaded image task ${task.taskId} in state ${task.state}.`,
+  });
+}
+
+async function executeCollectImageTask(runtime, browserLifecycle, imageTaskStore, commandId, parsedArgs) {
+  const task = imageTaskStore.getTask(parsedArgs.taskId);
+  if (!task) {
+    throwTaskNotFound(runtime, commandId, parsedArgs.taskId);
+  }
+  if (task.state === 'completed') {
+    return buildImageTaskResult(commandId, imageTaskStore.toPublicTask(task), {
+      message: `Image task ${task.taskId} is already completed.`,
+    });
+  }
+  if (task.state !== 'image_visible' && task.state !== 'collecting') {
+    throwCommandFailure({
+      runtime,
+      commandId,
+      category: 'invalid-args',
+      message: `Image task ${task.taskId} is not ready for collection (state=${task.state}).`,
+      reason: 'image-task-not-collectable',
+      details: { taskId: task.taskId, state: task.state },
+    });
+  }
+
+  imageTaskStore.updateTask(task.taskId, (draft) => ({
+    ...draft,
+    state: 'collecting',
+  }));
+
+  return withGeminiSession(runtime, browserLifecycle, async (session) => {
+    try {
+      let result;
+      if (task.fullSize) {
+        result = await withLegacyOutputDir(runtime, () => session.ops.downloadFullSizeImage());
+        if (!result?.ok) {
+          mapDownloadFailure(runtime, commandId, result, { operation: 'collect-image-task' });
+        }
+
+        const updatedTask = imageTaskStore.updateTask(task.taskId, (draft) => ({
+          ...draft,
+          state: 'completed',
+          session: toTaskSessionContext(session),
+          output: buildOutputArtifact(runtime, result.filePath, {
+            semantics: 'generated-full-size-image',
+            suggestedFilename: result.suggestedFilename ?? null,
+            sourceUrl: result.src ?? null,
+          }),
+          error: null,
+        }));
+
+        return buildImageTaskResult(commandId, imageTaskStore.toPublicTask(updatedTask), {
+          message: `Collected full-size artifact for image task ${task.taskId}.`,
+        });
+      }
+
+      result = await session.ops.extractImageBase64(task.image?.src ?? '');
+      if (!result?.ok) {
+        mapExtractionFailure(runtime, commandId, result, { operation: 'collect-image-task', imageUrl: task.image?.src ?? null });
+      }
+
+      const output = writeDataUrlArtifact(runtime, result.dataUrl, {
+        prefix: 'gemini',
+        semantics: 'generated-preview-image',
+        sourceUrl: task.image?.src ?? null,
+        method: result.method ?? null,
+      });
+
+      const updatedTask = imageTaskStore.updateTask(task.taskId, (draft) => ({
+        ...draft,
+        state: 'completed',
+        session: toTaskSessionContext(session),
+        output,
+        error: null,
+      }));
+
+      return buildImageTaskResult(commandId, imageTaskStore.toPublicTask(updatedTask), {
+        message: `Collected preview artifact for image task ${task.taskId}.`,
+      });
+    } catch (error) {
+      const failure = error instanceof CliRuntimeFailure
+        ? {
+            category: error.category,
+            message: error.message,
+            details: error.details ?? null,
+          }
+        : {
+            category: 'internal-error',
+            message: error instanceof Error ? error.message : String(error),
+            details: null,
+          };
+      imageTaskStore.markFailed(task.taskId, failure);
+      throw error;
+    }
+  });
 }
 
 function mapUploadFailure(runtime, commandId, result, context = {}) {
@@ -584,112 +906,31 @@ function mapGenerateFailure(runtime, commandId, result) {
   });
 }
 
-async function executeGenerateImage(runtime, browserLifecycle, commandId, parsedArgs) {
-  const timeoutMs = resolveCommandTimeout(runtime, parsedArgs.timeoutMs, 180_000);
-  const referenceImages = validateLocalImagePaths(runtime, commandId, parsedArgs.referenceImages, {
-    argument: 'referenceImages',
-  });
-
-  return withGeminiSession(runtime, browserLifecycle, async (session) => {
-    const loginCheck = await session.ops.checkLogin();
-    if (!loginCheck?.ok) {
-      throwSelectorFailure(runtime, commandId, 'Unable to determine Gemini login state before image generation.', 'check-login-failed', {
-        legacyResult: loginCheck,
-      });
-    }
-    if (!loginCheck.loggedIn) {
-      throwCommandFailure({
-        runtime,
-        commandId,
-        category: 'auth-failure',
-        message: 'Gemini is not logged in. Complete Google sign-in before generating images.',
-        reason: 'not-logged-in',
-        details: { loginCheck },
-      });
-    }
-
-    if (parsedArgs.newSession) {
-      const newChatResult = await session.ops.click('newChatBtn');
-      if (!newChatResult?.ok) {
-        throwSelectorFailure(runtime, commandId, 'Unable to start a new Gemini chat before image generation.', 'new-chat-click-failed', {
-          legacyResult: newChatResult,
-        });
-      }
-    }
-
-    const ensureModelResult = await session.ops.ensureModelPro();
-    if (!ensureModelResult?.ok) {
-      throwSelectorFailure(runtime, commandId, 'Unable to switch Gemini to the Pro model required for image generation.', ensureModelResult.error ?? 'ensure-model-pro-failed', {
-        legacyResult: ensureModelResult,
-      });
-    }
-
-    const uploadedReferenceImages = [];
-    for (const referenceImage of referenceImages) {
-      const uploadResult = await session.ops.uploadImage(referenceImage.normalizedPath);
-      if (!uploadResult?.ok) {
-        mapUploadFailure(runtime, commandId, uploadResult, {
-          stage: 'reference-image-upload',
-          inputPath: referenceImage.inputPath,
-          normalizedPath: referenceImage.normalizedPath,
-          uploadedCount: uploadedReferenceImages.length,
-          requestedCount: referenceImages.length,
-        });
-      }
-
-      uploadedReferenceImages.push({
-        inputPath: referenceImage.inputPath,
-        normalizedPath: referenceImage.normalizedPath,
-        elapsedMs: uploadResult.elapsed ?? null,
-        warning: uploadResult.warning ?? null,
-      });
-    }
-
-    const generateResult = await withLegacyOutputDir(runtime, () => session.ops.generateImage(parsedArgs.prompt, {
-      fullSize: parsedArgs.fullSize,
-      timeout: timeoutMs,
-    }));
-
-    if (!generateResult?.ok) {
-      mapGenerateFailure(runtime, commandId, generateResult);
-    }
-
-    if (parsedArgs.fullSize) {
-      return buildSessionResult(commandId, session, {
-        prompt: parsedArgs.prompt,
-        mode: 'full-size-download',
-        elapsedMs: generateResult.elapsed ?? null,
-        output: buildOutputArtifact(runtime, generateResult.filePath, {
-          semantics: 'generated-full-size-image',
-          suggestedFilename: generateResult.suggestedFilename ?? null,
-          sourceUrl: generateResult.src ?? null,
-        }),
-        download: {
-          index: generateResult.index ?? null,
-          total: generateResult.total ?? null,
-          suggestedFilename: generateResult.suggestedFilename ?? null,
-          sourceUrl: generateResult.src ?? null,
-        },
-        referenceImages: uploadedReferenceImages,
-        message: `Generated a Gemini image and downloaded the full-size asset to ${generateResult.filePath}.`,
-      });
-    }
-
-    const output = writeDataUrlArtifact(runtime, generateResult.dataUrl, {
-      prefix: 'gemini',
-      semantics: 'generated-preview-image',
-      method: generateResult.method ?? null,
+async function executeGenerateImage(runtime, browserLifecycle, imageTaskStore, commandId, parsedArgs) {
+  const startResult = await executeStartImageTask(runtime, browserLifecycle, imageTaskStore, 'start-image-task', parsedArgs);
+  const taskId = startResult.task?.taskId;
+  if (!hasText(taskId)) {
+    throwCommandFailure({
+      runtime,
+      commandId,
+      category: 'internal-error',
+      message: 'Image task start did not return a task id.',
+      reason: 'image-task-missing-id',
+      details: { startResult },
     });
+  }
 
-    return buildSessionResult(commandId, session, {
-      prompt: parsedArgs.prompt,
-      mode: 'preview-extraction',
-      elapsedMs: generateResult.elapsed ?? null,
-      extractionMethod: generateResult.method ?? null,
-      output,
-      referenceImages: uploadedReferenceImages,
-      message: `Generated a Gemini image preview and wrote it to ${output.filePath}.`,
-    });
+  const collectResult = await executeCollectImageTask(runtime, browserLifecycle, imageTaskStore, 'collect-image-task', { taskId });
+  const task = collectResult.task;
+
+  return buildBaseResult(commandId, {
+    task,
+    mode: task?.fullSize ? 'full-size-download' : 'preview-extraction',
+    output: task?.output ?? null,
+    referenceImages: Array.isArray(task?.referenceImages) ? task.referenceImages : [],
+    message: task?.output?.filePath
+      ? `Generated a Gemini image and wrote the artifact to ${task.output.filePath}.`
+      : `Generated a Gemini image via task ${taskId}.`,
   });
 }
 
@@ -805,6 +1046,7 @@ export async function executeImageMediaCommand({
   passthroughArgs,
   runtime,
   browserLifecycle,
+  imageTaskStore,
 }) {
   const commandId = command.id;
   if (!isImageMediaCommand(commandId)) {
@@ -828,8 +1070,14 @@ export async function executeImageMediaCommand({
   }
 
   switch (commandId) {
+    case 'start-image-task':
+      return executeStartImageTask(runtime, browserLifecycle, imageTaskStore, commandId, parsedArgs);
+    case 'get-image-task':
+      return executeGetImageTask(runtime, imageTaskStore, commandId, parsedArgs);
+    case 'collect-image-task':
+      return executeCollectImageTask(runtime, browserLifecycle, imageTaskStore, commandId, parsedArgs);
     case 'generate-image':
-      return executeGenerateImage(runtime, browserLifecycle, commandId, parsedArgs);
+      return executeGenerateImage(runtime, browserLifecycle, imageTaskStore, commandId, parsedArgs);
     case 'upload-images':
       return executeUploadImages(runtime, browserLifecycle, commandId, parsedArgs);
     case 'get-images':
